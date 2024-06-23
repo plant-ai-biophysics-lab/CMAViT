@@ -274,7 +274,6 @@ blocks_size = {'LIV_003_2016': [392, 1560],
  'LIV_193_2018': [159, 295],
  'LIV_193_2019': [107, 288], }
 
-
 class Configs():
     def __init__(self, 
                  img_size: int, 
@@ -293,7 +292,8 @@ class Configs():
                  vis: str = True, 
                  multi_conv: str = True,
                  cond: str = False,
-                 tokenizer: str = 'EC'):
+                 tokenizer: str = 'EC', 
+                 mask_modality: str = 'text'):
 
         self.img_size = img_size
         self.patch_size = patch_size
@@ -312,6 +312,7 @@ class Configs():
         self.multi_conv = multi_conv
         self.pool = pool
         self.tokenizer = tokenizer
+        self.mask_modality = mask_modality
     
     def call(self):
         """Returns the Spatio-temporal configuration."""
@@ -334,6 +335,7 @@ class Configs():
         config.pool = self.pool
         config.multi_conv = self.multi_conv
         config.tokenizer = self.tokenizer
+        config.mask_modality = self.mask_modality
 
         return config
    

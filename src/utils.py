@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as  mpatches
 import seaborn as sns
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from models.configs import blocks_information, blocks_size
+from model.configs import blocks_information, blocks_size
 
 
 #-------------------------------------------------------------------------------------------#

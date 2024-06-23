@@ -25,7 +25,7 @@ EXTREME_LOWER_THRESHOLD = 22.24
 EXTREME_UPPER_THRESHOLD = 54.36
 HECTARE_TO_ACRE_SCALE = 2.471  # 2.2417
 MAXIMUM_AXIS_VALUE = 75
-WEEK_FOR_VIS = 15
+WEEK_FOR_VIS = 14
 
 PLOT_CMAP = 'viridis'
 PLOT_MINCNT = 100
@@ -469,11 +469,16 @@ class performance():
                  exp_name: str):
         self.exp_name = exp_name
 
-        self.exp_output_dir = '/data2/hkaman/ViT/EXPs/' + 'EXP_' + exp_name 
+        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/' + 'EXP_' + exp_name 
 
         self.train_df = pd.read_csv(os.path.join(self.exp_output_dir, exp_name + '_train.csv'), index_col=0)
+        self.train_df = self.train_df[self.train_df['ypred_w15'] > 0]
+
         self.valid_df = pd.read_csv(os.path.join(self.exp_output_dir, exp_name + '_valid.csv'), index_col=0)
+        self.valid_df = self.valid_df[self.valid_df['ypred_w15'] > 0]
+
         self.test_df = pd.read_csv(os.path.join(self.exp_output_dir, exp_name + '_test.csv'), index_col=0)
+        self.test_df = self.test_df[self.test_df['ypred_w15'] > 0]
 
         # self.iter_test_list_df = return_iter_test_dfs(os.path.join(self.exp_output_dir, exp_name))
         # self.modified_quantile_test_df = return_modified_df(self.test_df)
@@ -551,7 +556,7 @@ class performance():
         plt.show()
         None
 
-        return results
+        # return results
     
     def mape_per_yield_range(self, th1: int, th2: int):
 

@@ -3,8 +3,13 @@ import numpy as np
 from glob import glob
 import pandas as pd
 import torch
-
+from PyPDF2 import PdfReader
 from model import configs
+import numpy as np
+from model import configs, engine
+seed = 1987 + engine.get_rank()
+torch.manual_seed(seed)
+np.random.seed(seed)
 
 EXTREME_LOWER_THRESHOLD = 9  #22.24
 EXTREME_UPPER_THRESHOLD = 22 #54.36
@@ -13,12 +18,16 @@ HECTARE_TO_ACRE_SCALE = 2.471 # 2.2417
 
 def dataloaders(
         batch_size:int, 
+        img_size: int,
         in_channels:int, 
         resmapling_status: False,
+        data: str,
         exp_name: str): 
 
-    data_dir       = '/data2/hkaman/Livingston/data/10m/'
-    exp_output_dir = '/data2/hkaman/ViT/EXPs/' + 'EXP_' + exp_name
+    root_data_dir = '/data2/hkaman/Data/'
+    root_exp_dir = '/data2/hkaman/Projects/'
+
+    exp_output_dir = root_exp_dir + 'ViT/EXPs/' + 'EXP_' + exp_name
 
 
     isExist  = os.path.isdir(exp_output_dir)
@@ -29,52 +38,40 @@ def dataloaders(
         os.makedirs(os.path.join(exp_output_dir, 'coords'))
         os.makedirs(os.path.join(exp_output_dir, 'loss'))
 
-    train_csv = pd.read_csv('/data2/hkaman/Livingston/EXPs/10m/EXP_S3_UNetLSTM_10m_time/coords/train.csv', index_col=0)
-    train_csv.to_csv(os.path.join(exp_output_dir + '/coords','train.csv'))
-    valid_csv = pd.read_csv('/data2/hkaman/Livingston/EXPs/10m/EXP_S3_UNetLSTM_10m_time/coords/val.csv', index_col= 0)
-    valid_csv.to_csv(os.path.join(exp_output_dir + '/coords','val.csv'))
-    test_csv  = pd.read_csv('/data2/hkaman/Livingston/EXPs/10m/EXP_S3_UNetLSTM_10m_time/coords/test.csv', index_col= 0)
-    test_csv.to_csv(os.path.join(exp_output_dir + '/coords','test.csv'))
-    
-    train_csv.to_csv(os.path.join(exp_output_dir + '/coords','train.csv'))
-    valid_csv.to_csv(os.path.join(exp_output_dir + '/coords','val.csv'))
-    test_csv.to_csv(os.path.join(exp_output_dir  + '/coords','test.csv'))
-    
+    if data == 's2':
+        train_csv = pd.read_csv('/data2/hkaman/Data/Coords/S2/BHO/train.csv', index_col=0)
+        train_csv.to_csv(os.path.join(exp_output_dir + '/coords','train.csv'))
+        valid_csv = pd.read_csv('/data2/hkaman/Data/Coords/S2/BHO/val.csv', index_col= 0)
+        valid_csv.to_csv(os.path.join(exp_output_dir + '/coords','val.csv'))
+        test_csv  = pd.read_csv('/data2/hkaman/Data/Coords/S2/BHO/test.csv', index_col= 0)
+        test_csv.to_csv(os.path.join(exp_output_dir + '/coords','test.csv'))
+    elif data == 'p':
+        train_csv = pd.read_csv('/data2/hkaman/Data/Coords/Planet/BHO/train.csv', index_col=0)
+
+        train_csv.to_csv(os.path.join(exp_output_dir + '/coords','train.csv'))
+        valid_csv = pd.read_csv('/data2/hkaman/Data/Coords/Planet/BHO/val.csv', index_col= 0)
+
+        valid_csv.to_csv(os.path.join(exp_output_dir + '/coords','val.csv'))
+        test_csv  = pd.read_csv('/data2/hkaman/Data/Coords/Planet/BHO/test.csv', index_col= 0)
+        test_csv.to_csv(os.path.join(exp_output_dir + '/coords','test.csv'))
 
     print(f"{train_csv.shape} | {valid_csv.shape} | {test_csv.shape}")
-    #==============================================================================================================#
-    #============================================ Imprical Data Weight Generation =================================#
-    #==============================================================================================================#
-    
-    train_weights = train_csv['NormWeight'].to_numpy() 
-    train_weights = torch.DoubleTensor(train_weights)
-    train_sampler = torch.utils.data.sampler.WeightedRandomSampler(
-        train_weights, 
-        len(train_weights), 
-        replacement=True)    
-
-    val_weights   = valid_csv['NormWeight'].to_numpy() 
-    val_weights   = torch.DoubleTensor(val_weights)
-    val_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
-        val_weights, 
-        len(val_weights), 
-        replacement=True)    
-    
-    test_weights   = test_csv['NormWeight'].to_numpy() 
-    test_weights   = torch.DoubleTensor(test_weights)
-    test_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
-        test_weights, 
-        len(test_weights), 
-        replacement=True)  
     #==============================================================================================================#
     #============================================     Reading Data                =================================#
     #==============================================================================================================#
     #csv_coord_dir = '/data2/hkaman/Livingston/EXPs/10m/EXP_S3_UNetLSTM_10m_time/'
+
+    if data == 's2':
+        data_dir = root_data_dir + 'Livingston/data/10m/'
+    elif data =='p':
+        data_dir = root_data_dir + 'planet/data/'
+
+
     dataset_training = dataloader_RGB(
         data_dir, 
         exp_output_dir, 
         category = 'train', 
-        patch_size = 16, 
+        patch_size = img_size, 
         in_channels = in_channels,
     )
 
@@ -82,7 +79,7 @@ def dataloaders(
         data_dir, 
         exp_output_dir, 
         category = 'val',  
-        patch_size = 16, 
+        patch_size = img_size, 
         in_channels = in_channels,
     )
     
@@ -90,7 +87,7 @@ def dataloaders(
         data_dir, 
         exp_output_dir, 
         category = 'test',  
-        patch_size = 16, 
+        patch_size = img_size, 
         in_channels = in_channels,
     )     
 
@@ -99,6 +96,27 @@ def dataloaders(
     #==============================================================================================================#                      
     # define training and validation data loaders
     if resmapling_status: 
+        train_weights = train_csv['NormWeight'].to_numpy() 
+        train_weights = torch.DoubleTensor(train_weights)
+        train_sampler = torch.utils.data.sampler.WeightedRandomSampler(
+        train_weights, 
+        len(train_weights), 
+        replacement=True)    
+
+        val_weights   = valid_csv['NormWeight'].to_numpy() 
+        val_weights   = torch.DoubleTensor(val_weights)
+        val_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
+        val_weights, 
+        len(val_weights), 
+        replacement=True)    
+    
+        test_weights   = test_csv['NormWeight'].to_numpy() 
+        test_weights   = torch.DoubleTensor(test_weights)
+        test_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
+        test_weights, 
+        len(test_weights), 
+        replacement=True)  
+    
         print(f"resampling is calculating!")
         data_loader_training = torch.utils.data.DataLoader(dataset_training, batch_size= batch_size, 
                                                         shuffle=False,  sampler=train_sampler, num_workers=8)  
@@ -544,62 +562,130 @@ class dataloader_RGB(object):
         self.images = sorted(glob(os.path.join(self.npy_dir , 'new_imgs') +'/*.npy'))
         self.labels = sorted(glob(os.path.join(self.npy_dir , 'new_labels') +'/*.npy'))
 
+        self.stats_dict = np.load('/data2/hkaman/Data/Coords/met_stats.npz', allow_pickle=True)
+        self.stats_dict = self.stats_dict['arr_0'].item() 
 
     def __getitem__(self, idx):
 
-        xcoord             = self.NewDf.loc[idx]['X'] 
-        ycoord             = self.NewDf.loc[idx]['Y'] 
-        block_id           = self.NewDf.loc[idx]['block']
-        cultivar           = self.NewDf.loc[idx]['cultivar']
-        cultivar_id        = self.NewDf.loc[idx]['cultivar_id']
-        rw_id              = self.NewDf.loc[idx]['row']
-        sp_id              = self.NewDf.loc[idx]['space']
-        t_id               = self.NewDf.loc[idx]['trellis_id']
-        WithinBlockMean    = self.NewDf.loc[idx]['win_block_mean']
+        xcoord = self.NewDf.loc[idx]['X'] 
+        ycoord = self.NewDf.loc[idx]['Y'] 
+        block_id = self.NewDf.loc[idx]['block']
+        cultivar = self.NewDf.loc[idx]['cultivar']
+        cultivar_id = self.NewDf.loc[idx]['cultivar_id']
+        rw_id = self.NewDf.loc[idx]['row']
+        sp_id = self.NewDf.loc[idx]['space']
+        t_id = self.NewDf.loc[idx]['trellis_id']
 
+        # IMAGE
+        S2_path = self.NewDf.loc[idx]['IMG_PATH']
+        S2 = self.crop_gen(S2_path, xcoord, ycoord) 
+        S2 = np.swapaxes(S2, -1, 0)    
+        S2 = S2 / 255.
         
-        img_path   = self.NewDf.loc[idx]['IMG_PATH']
-        label_path = self.NewDf.loc[idx]['LABEL_PATH']
 
-        # return cropped input image using each patch coordinates
-        image = self.crop_gen(img_path, xcoord, ycoord) 
-        image = np.swapaxes(image, -1, 0)    
-        if self.in_channels == 5: 
-            block_timeseries_encode = self.time_series_encoding(block_id)
-            image = np.concatenate([image, block_timeseries_encode], axis = 0)
-        elif self.in_channels == 6:
-            block_means = self.add_input_within_bc_mean(WithinBlockMean)
-            block_timeseries_encode = self.time_series_encoding(block_id)
-            image = np.concatenate([image, block_means, block_timeseries_encode], axis = 0)
+        WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
+        block_means = self.add_input_within_bc_mean(WithinBlockMean)
+        block_timeseries_encode = self.time_series_encoding(block_id)
 
+        S1_path = self.NewDf.loc[idx]['S1_PATH']
+        S1 = self.crop_gen(S1_path, xcoord, ycoord) 
+        S1 = np.swapaxes(S1, -1, 0)
+
+        image = np.concatenate([S2, S1, block_means, block_timeseries_encode], axis = 0)
         image = torch.as_tensor(image, dtype=torch.float32)
-        image = image / 255.
+        image[torch.isnan(image)] = 0
 
-        # return crooped mask tensor: 
-        mask  = self.crop_gen(label_path, xcoord, ycoord) 
-        mask  = np.swapaxes(mask, -1, 0)
-        mask  = torch.as_tensor(mask, dtype=torch.float32)
+        # MASK 
+        label_path = self.NewDf.loc[idx]['LABEL_PATH']
+        mask = self.crop_gen(label_path, xcoord, ycoord) 
+        mask = np.swapaxes(mask, -1, 0)
+        mask = torch.as_tensor(mask, dtype=torch.float32)
 
-        # return yield zone: 
-        yz = self.return_yield_zone(mask)
-        yz  = torch.as_tensor(yz, dtype=torch.float32)
+        # YIELDZONE: 
+        yz = self.return_yield_zone_9_classes(mask)
+        yz = torch.as_tensor(yz, dtype=torch.float32)
 
-        # Management information as a tensor
-        EmbTensor = torch.as_tensor((cultivar_id, t_id, rw_id, sp_id), dtype=torch.int64)
+        # # Management information as a tensor
+        # EmbTensor = torch.as_tensor((cultivar_id, t_id, rw_id, sp_id), dtype=torch.int64)
+        #f"The {cultivar} has a trellis id {t_id}, row space {rw_id} and canopy space {sp_id}."
+        # TEXT
+        text_path = self.NewDf.loc[idx]['TEXT_PATH']
+        EmbText = self.load_text_file(text_path)
 
-        # Management information as a text
-        EmbText = f"The {cultivar} has a trellis id {t_id}, row space {rw_id} and canopy space {sp_id}."
-
+        # Meteorological data
+        met_path = self.NewDf.loc[idx]['MET_PATH']
+        met = np.load(met_path)
+        met = self.met_normalizer(met[..., 0], method= 'z-score')
         
-        sample = {"image": image, "mask": mask, "block": block_id, "cultivar": cultivar, 
-                "X": xcoord, "Y": ycoord, "EmbList": [cultivar_id, t_id, rw_id, sp_id], 
-                "EmbTensor": EmbTensor, "EmbText": EmbText, "YZ": yz} 
+        sample = {"image": image, "mask": mask, "met": met, "block": block_id, "cultivar": cultivar, 
+                "X": xcoord, "Y": ycoord, "EmbList": [cultivar_id, t_id, rw_id, sp_id], "EmbText": EmbText, "YZ": yz} 
             
         return sample
 
     def __len__(self):
         return len(self.NewDf)
     
+    def load_text_file(self, file_path):
+        # Extract the file extension to determine how to process it
+        _, file_extension = os.path.splitext(file_path)
+        
+        if file_extension.lower() == '.pdf':
+            # Handle PDF files
+            pdf_loader = PdfReader(open(file_path, "rb"))
+            file_text = ""
+            for page_num in range(len(pdf_loader.pages)):
+                pdf_page = pdf_loader.pages[page_num]
+                if pdf_page.extract_text() is not None:
+                    file_text += pdf_page.extract_text()
+            return file_text
+        
+        elif file_extension.lower() == '.txt':
+            # Handle text files
+            with open(file_path, "r", encoding="utf-8") as file:
+                file_text = file.read()
+            return file_text
+        
+        else:
+            # Unsupported file type
+            raise ValueError("Unsupported file format: " + file_extension)
+    
+    def met_normalizer(self, arr, method='z-score'):
+        """
+        Normalize the meteorological dataset using either min-max normalization or z-score normalization.
+
+        Parameters
+        ----------
+        arr : np.ndarray
+            The input array to normalize, with the shape (channels, ...).
+        stats_dict : dict
+            The dictionary containing the statistics (mean, std, min, max) for each variable.
+        method : str
+            The normalization method, either 'min-max' or 'z-score'.
+            
+        Returns
+        -------
+        np.ndarray
+            The normalized array.
+        """
+        for channel in range(1, 4):
+            channel_key = {1: 'tmin', 2: 'tmax', 3: 'vp'}[channel]
+            
+            if method == 'z-score':
+                mean_values = np.array(self.stats_dict[channel_key]['mean'])
+                std_values = np.array(self.stats_dict[channel_key]['std'])
+
+                for w in range(15):
+                    arr[channel, ...] = (arr[channel, ...] - mean_values[w]) / std_values[w]
+
+            elif method == 'min-max':
+                min_values = np.array(self.stats_dict[channel_key]['min'])
+                max_values = np.array(self.stats_dict[channel_key]['max'])
+
+                for w in range(15):
+                    arr[channel, ...] = (arr[channel, ...] - min_values[w]) / (max_values[w] - min_values[w])
+
+        return arr
+
     def return_yield_zone(self, mask):
         # Initialize an empty array with the same shape as the image for the segmented output
         segmented = np.zeros_like(mask)
@@ -611,15 +697,38 @@ class dataloader_RGB(object):
         segmented[mask >= EXTREME_UPPER_THRESHOLD] = 3
 
         return segmented
+    
+    def return_yield_zone_9_classes(self, mask):
+        # Initialize an empty array with the same shape as the image for the segmented output
+        segmented = np.zeros_like(mask)
+        
+        # Values < 8: Class 1
+        segmented[mask < 8] = 1
+        
+        # Values between 8 and 22: Classes 2 to 8 (7 intervals of 2)
+        for i, val in enumerate(range(8, 22, 2), start=2):
+            lower_bound = val
+            upper_bound = val + 2
+            segmented[(mask >= lower_bound) & (mask < upper_bound)] = i
+        
+        # Values > 22 and < 30: Last class (9)
+        segmented[(mask > 22) & (mask < 30)] = 9
+        
+        # Value == 30: Also last class (9)
+        segmented[mask == 30] = 9
+
+        return segmented
 
     def crop_gen(self, src, xcoord, ycoord):
         src = np.load(src, allow_pickle=True)
+        if src.ndim == 2:
+            src = np.expand_dims(src, axis = 0)
+            src = np.expand_dims(src, axis = -1)
         crop_src = src[:, xcoord:xcoord + self.wsize, ycoord:ycoord + self.wsize, :]
         return crop_src 
     
     def add_input_within_bc_mean(self, bloks_mean):
         fill_matrix_bmean = np.full((1, self.wsize, self.wsize, 15), bloks_mean) 
-        
         return fill_matrix_bmean
     
     def time_series_encoding(self, block_id):

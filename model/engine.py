@@ -6,12 +6,12 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-
+from multiprocessing import Pool, cpu_count
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
+import os 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from model import configs
-from utils import losses
-
+from src import losses
 #======================================================================================================================================#
 #====================================================== Training Config ===============================================================#
 #======================================================================================================================================#   
@@ -121,7 +121,7 @@ class ViTYieldEst:
         params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.Adam(params, lr=self.lr, weight_decay=self.wd)
 
-        self.exp_output_dir = '/data2/hkaman/ViT/EXPs/' + 'EXP_' + self.exp
+        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/' + 'EXP_' + self.exp
 
         self.best_model_name = os.path.join(self.exp_output_dir, 'best_model_' + self.exp + '.pth')
         self.last_model_name = os.path.join(self.exp_output_dir, 'last_model_' + self.exp + '.pth')
@@ -162,18 +162,19 @@ class ViTYieldEst:
             for batch, sample in enumerate(data_loader_training):
                 
                 xtrain = sample['image'].to(device)
+                mettrain = sample['met'].to(device)
                 ytrain_true = sample['mask'][:,:,:,:,0].to(device)
                 embtext_train = sample['EmbText']
-                embtensor_train = sample['EmbTensor'].to(device)
                 yieldzone_train = sample['YZ'].to(device)
 
-                list_ytrain_pred  = self.model(xtrain, embtext_train)
+                list_ytrain_pred = self.model(xtrain, embtext_train, mettrain, yieldzone_train) #, _, _
 
                 self.optimizer.zero_grad()
 
                 train_loss = self._calculate_timeseries_loss(ytrain_true, list_ytrain_pred, loss)
 
                 train_loss.backward()
+
                 self.optimizer.step()
                 train_epoch_loss += train_loss.item() 
 
@@ -184,12 +185,12 @@ class ViTYieldEst:
                 for batch, sample in enumerate(data_loader_validate):
                     
                     xvalid = sample['image'].to(device)
+                    metvalid = sample['met'].to(device)
                     yvalid_true = sample['mask'][:,:,:,:,0].to(device)
                     embtext_valid = sample['EmbText']
-                    embtensor_valid = sample['EmbTensor'].to(device)
                     yieldzone_valid = sample['YZ'].to(device)
 
-                    list_yvalid_pred = self.model(xvalid, embtext_valid) 
+                    list_yvalid_pred = self.model(xvalid, embtext_valid, metvalid, yieldzone_valid)  #, _, _ 
                     valid_loss = self._calculate_timeseries_loss(yvalid_true, list_yvalid_pred, loss)
 
                     val_epoch_loss += valid_loss.item()
@@ -199,7 +200,6 @@ class ViTYieldEst:
 
             training_duration_time = (time.time() - training_start_time)        
             print(f'Epoch {epoch+0:03}: | Time(s): {training_duration_time:.3f}| Train Loss: {train_epoch_loss/len(data_loader_training):.4f} | Val Loss: {val_epoch_loss/len(data_loader_validate):.4f}') 
-
 
             checkpoint = {
             'epoch': epoch + 1,
@@ -233,6 +233,13 @@ class ViTYieldEst:
 
         save_loss_df(loss_stats, self.loss_df_name, self.loss_fig_name)
 
+    def calculate_loss(self, y_pred, y_true, loss_type):
+
+        if loss_type == 'mse':
+            return losses.mse_loss(y_pred, y_true)
+        elif loss_type == 'morans':
+            return losses.MoranCalculator()(y_pred, y_true)
+
     def _calculate_timeseries_loss(self, y_true, list_y_pred, loss_type):
         """
         Calculates the cumulative mean squared error loss for a list of predictions or a single prediction.
@@ -240,65 +247,45 @@ class ViTYieldEst:
         Parameters:
         - y_true (Tensor): The ground truth values.
         - list_y_pred (list of Tensors or Tensor): List of predicted values or a single tensor.
-        - weight (Tensor): The weight for weighted loss calculations.
         - loss_type (str): The type of loss ('mse', 'wmse', 'huber').
 
         Returns:
         - Tensor: The cumulative MSE loss for all predictions.
         """
 
-        # Check if list_y_pred is a list or a single tensor
-
         if isinstance(list_y_pred, list):
-            total_loss = 0.0
-            for y_pred in list_y_pred:
-                if loss_type == 'mse':
-                    current_loss = losses.mse_loss(y_pred, y_true)
-                # elif loss_type == 'wmse':
-                #     current_loss = losses.weighted_mse_loss(y_pred, y_true, weight)
-                # elif loss_type == 'huber':
-                #     current_loss = losses.weighted_huber_mse_loss(y_pred, y_true, weight)
-                # elif loss_type == 'focal':
-                #     current_loss = losses.weighted_focal_mse_loss(y_pred, y_true, weights=None, activate='sigmoid', beta=.2, gamma=1)
-
-                
-                total_loss += current_loss
+            losses_list = [self.calculate_loss(y_pred, y_true, loss_type) for y_pred in list_y_pred]
+            total_loss = sum(losses_list)
         else:
             # list_y_pred is a single tensor
             y_pred = list_y_pred
-            if loss_type == 'mse':
-                total_loss = losses.mse_loss(y_pred, y_true) #
-            # elif loss_type == 'wmse':
-            #     total_loss = losses.weighted_mse_loss(y_pred, y_true, weight)
-            # elif loss_type == 'huber':
-            #     total_loss = losses.weighted_huber_mse_loss(y_pred, y_true, weight)
-            # elif loss_type == 'focal':
-            #     current_loss = losses.weighted_focal_mse_loss(y_pred, y_true, weights=None, activate='sigmoid', beta=.2, gamma=1)
-            
+            total_loss = self.calculate_loss(y_pred, y_true, loss_type)
 
         return total_loss
-
+    
     def predict(self, model, data_loader, category: str, iter: int):
 
         model.load_state_dict(torch.load(self.best_model_name))
-        output_files =[]
+        output_files, tokens = [], []
+        text_array_list = []
 
         for i in range(iter):
+            # self.model.eval()
             with torch.no_grad():
+                data_dict = {}
                 for sample in data_loader:
                     x = sample['image'].to(device)
+                    met = sample['met'].to(device)
                     y = sample['mask'].detach().cpu().numpy()
+
                     block_id = sample['block']
                     block_cultivar_id = sample['cultivar']
                     block_x_coords = sample['X']
                     block_y_coords = sample['Y']
 
-                    emblist = sample['EmbList']
-                    embtext = sample['EmbText'].to(device)
-                    embtensor = sample['EmbTensor'].to(device)
+                    embtext = sample['EmbText']
                     yieldzone = sample['YZ'].to(device)
-                
-                    pred_list = self.model(x, embtensor)
+                    pred_list = self.model(x, embtext, met, yieldzone) #, attn_list, batch_tokens
 
                     this_batch = {"block": block_id, 
                                         "cultivar": block_cultivar_id, 
@@ -321,18 +308,41 @@ class ViTYieldEst:
                                         "ypred_w15": pred_list[14].detach().cpu().numpy()}
                     
                     output_files.append(this_batch)
+                    # tokens.extend(batch_tokens)    
+                    # text_array_list.append(attn_list[0]) 
+
+                    # unique_id = block_id.item()  
+                    # idx = 0
+                    # for block in block_id:
+                    #     data_dict[idx] = {'block': block, 'tokens': batch_tokens[idx], 'text_array': attn_list[0][idx, ...]}
+                    #     idx += 1 
+                # Save the structured array as an .npy file
+                # np.save('attn_scores.npy', data_dict)
 
                 modified_df = self._return_modified_pred_df(output_files, None, 16)
+                # Convert the list to a NumPy array
+                # text_array_list = np.concatenate(text_array_list, axis = 0)
+                # np.save('text_array.npy', text_array_list)
+                # np.save('im_array_w15.npy', attn_list[1][-1])
+                # np.save('imt_array.npy', attn_list[2])
+                # import json
+                # with open('attn0.json', 'w') as json_file:
+                #     json.dump(attn_list[0], json_file)
+                # with open('attn1.json', 'w') as json_file:
+                #     json.dump(attn_list[0], json_file)
+                # with open('attn2.json', 'w') as json_file:
+                #     json.dump(attn_list[0], json_file)
+
                 if category == 'train':
-                    name_tr = self.train_df_name[:-4] + f'_{i}' + '.csv'
+                    name_tr = self.train_df_name[:-4] + '.csv'
                     modified_df.to_csv(name_tr)
                     print("train inference is done!")
                 elif category == 'valid':
-                    name_val = self.valid_df_name[:-4] + f'_{i}' + '.csv'
+                    name_val = self.valid_df_name[:-4]+ '.csv' #+ f'_{i}' +
                     modified_df.to_csv(name_val)
                     print("validation inference is done!")
                 elif category == 'test':
-                    name_te = self.test_df_name[:-4] + f'_{i}' + '.csv'
+                    name_te = self.test_df_name[:-4] + '.csv'
                     modified_df.to_csv(name_te)
                     print("test inference is done!")
 
