@@ -1,16 +1,15 @@
 import torch
 from torch import nn
-from timm.models.layers import trunc_normal_
 from ml_collections import ConfigDict
 # from torch.jit import script
-from typing import Dict, List, NamedTuple, Optional, Tuple, Union, cast, overload
+from typing import Dict, Union
 
 import os 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import numpy as np
-from model import configs, engine
-seed = 1987 + engine.get_rank()
+# from model import configs, engine
+seed = 1987 #+ engine.get_rank()
 torch.manual_seed(seed)
 np.random.seed(seed)
 
@@ -18,6 +17,8 @@ from model.attention import TextEmbed, AccMetEmbed, AccImgEmbed, MultiRegression
 from model.attention import TextEncoder, SpatialMetEncoder, MultiModalTransformer
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 
 class MMST_ViT(nn.Module):
     def __init__(self, config: Union[Dict], 
@@ -78,18 +79,172 @@ class MMST_ViT(nn.Module):
             
 
     
-    def process_embedding(self, 
-                          x: torch.Tensor, 
-                          s_embeds: nn.Module, 
-                          met: torch.Tensor,  
-                          m_embeds: nn.Module, 
-                          encoder) -> torch.Tensor:
+    # def process_embedding(self, 
+    #                       x: torch.Tensor, 
+    #                       s_embeds: nn.Module, 
+    #                       met: torch.Tensor,  
+    #                       m_embeds: nn.Module, 
+    #                       encoder) -> torch.Tensor:
         
-        x_s = s_embeds(x)
-        x_m = m_embeds(met)
-        x_o, attn = encoder(x_s, x_m)
+    #     x_s = s_embeds(x)
+    #     x_m = m_embeds(met)
+    #     x_o, attn = encoder(x_s, x_m)
     
-        return x_o, attn
+    #     return x_o, attn
+
+    # def forward(self, 
+    #             img: torch.Tensor,
+    #             context: str = None, 
+    #             met: torch.Tensor = None, 
+    #             yz: torch.Tensor = None): 
+        
+    #     # Conditional input modulation
+    #     if self.cond is True:
+    #         img = img * yz
+
+    #     out, attns = [], {}
+
+    #     if self.mask_modality != 'text':
+    #         context = self.text_embed(context)
+    #         context, text_attn = self.text_transformer(context)
+    #         context = context.mean(dim=1)
+    #         context = torch.unsqueeze(context, dim=1)
+    #         attns['ItextAttn'] = [text_attn]
+
+    #     for index, (img_embed, met_embed) in enumerate(zip(self.img_embeds, self.met_embeds)):
+    #         if self.mask_modality != 'image':
+    #             img_t = img[..., :index+1]
+    #         else:
+    #             img_t = torch.zeros_like(img[..., :index+1])
+
+    #         if self.mask_modality != 'met':
+    #             met_t = met[:, :, :index+1, :]
+    #         else:
+    #             met_t = torch.zeros_like(met[:, :, :index+1, :])
+
+    #         ImgMet_t, ImgMetAttn = self.process_embedding(img_t, 
+    #                                          img_embed, 
+    #                                          met_t, 
+    #                                          met_embed, 
+    #                                          self.spatialmet_encoder)
+    #         ImgMet_t_mean = ImgMet_t.mean(dim=1)
+           
+    #         if self.mask_modality != 'text':
+    #             ImgMet_t_mean = torch.unsqueeze(ImgMet_t_mean, dim = 1)
+    #             ImgMetText_t, MMAttn = self.cross_attn_encoder(ImgMet_t_mean, context)
+    #             ImgMetText_t = ImgMetText_t.mean(dim=1)
+    #             ImgMetText_t = torch.unsqueeze(ImgMetText_t, dim = 1)
+    #             ImgMetText_t = torch.cat((ImgMetText_t, ImgMet_t_mean), dim = 1)
+    #             ImgMetText_t = ImgMetText_t.view(ImgMetText_t.size(0), -1)
+    #             out.append(ImgMetText_t)
+    #         else:
+    #             out.append(ImgMet_t_mean)
+
+    #         # key_imgmet = f'ImgMetAttn_{index}'
+    #         # key_mmattn = f'MMAttn_{index}'
+    #         # if key_imgmet not in attns:
+    #         #     attns[key_imgmet] = []
+            
+    #         #     attns[key_mmattn] = []
+
+    #         # attns[key_imgmet].append(ImgMetAttn)
+    #         # attns[key_mmattn].append(MMAttn)
+        
+    #     preds = self.head(out)
+
+    #     return preds, attns
+
+
+    def _text_maskout_forward(self, img, met):
+
+        out = []
+        for index, (img_embed, met_embed) in enumerate(zip(self.img_embeds, self.met_embeds)):
+
+            img_t = img[..., :index+1]
+            met_t = met[:, :, :index+1, :]
+
+            ImgMet_t, _ = self.process_embedding(img_t, 
+                                             img_embed, 
+                                             met_t, 
+                                             met_embed, 
+                                             self.spatialmet_encoder)
+            
+            ImgMet_t_mean = ImgMet_t.mean(dim=1)
+           
+            out.append(ImgMet_t_mean)
+
+        return out
+
+    def _met_maskout_forward(self, img, context):
+        text_attn = []
+        context = self.text_embed(context)
+        context, attn = self.text_transformer(context)
+        context = context.mean(dim=1)
+        context = torch.unsqueeze(context, dim=1)
+        attn = torch.stack(attn, dim=4) 
+        text_attn.append(attn)
+
+
+        out = []
+        for index, img_embed in enumerate(self.img_embeds):
+
+            img_t = img[..., :index+1]
+            img_t = img_embed(img_t)
+            ImgMet_t, _ = self.spatialmet_encoder(img_t, met = None)
+            ImgMet_t_mean = ImgMet_t.mean(dim=1)
+            ImgMet_t_mean = torch.unsqueeze(ImgMet_t_mean, dim = 1)
+            ImgMetText_t, _ = self.cross_attn_encoder(ImgMet_t_mean, context)
+            ImgMetText_t = ImgMetText_t.mean(dim=1)
+            ImgMetText_t = torch.unsqueeze(ImgMetText_t, dim = 1)
+            ImgMetText_t = torch.cat((ImgMetText_t, ImgMet_t_mean), dim = 1)
+            ImgMetText_t = ImgMetText_t.view(ImgMetText_t.size(0), -1)
+            out.append(ImgMetText_t)
+
+        return out, text_attn
+
+    def _textmet_maskout_forward(self, img):
+
+        out = []
+        for index, img_embed in enumerate(self.img_embeds):
+
+            img_t = img[..., :index+1]
+            img_t = img_embed(img_t)
+            ImgMet_t, _ = self.spatialmet_encoder(img_t, x_m = None)
+            ImgMet_t_mean = ImgMet_t.mean(dim=1)
+            out.append(ImgMet_t_mean)
+        return out
+    
+    def _forward(self, img, context, met):
+        text_attn = []
+        context = self.text_embed(context)
+        context, attn = self.text_transformer(context)
+        context = context.mean(dim=1)
+        context = torch.unsqueeze(context, dim=1)
+        attn = torch.stack(attn, dim=4) 
+        text_attn.append(attn)
+
+        out = []
+        
+        for index, (img_embed, met_embed) in enumerate(zip(self.img_embeds, self.met_embeds)):
+
+            img_t = img[..., :index+1]
+            img_t = img_embed(img_t)
+            met_t = met[:, :, :index+1, :]
+            met_t = met_embed(met_t)
+
+            ImgMet_t, _ = self.spatialmet_encoder(img_t, met_t)
+            ImgMet_t_mean = ImgMet_t.mean(dim=1)
+            ImgMet_t_mean = torch.unsqueeze(ImgMet_t_mean, dim = 1)
+            ImgMetText_t, _ = self.cross_attn_encoder(ImgMet_t_mean, context)
+            ImgMetText_t = ImgMetText_t.mean(dim=1)
+            ImgMetText_t = torch.unsqueeze(ImgMetText_t, dim = 1)
+            ImgMetText_t = torch.cat((ImgMetText_t, ImgMet_t_mean), dim = 1)
+
+            ImgMetText_t = ImgMetText_t.view(ImgMetText_t.size(0), -1)
+
+            out.append(ImgMetText_t)
+
+        return out, text_attn
 
     def forward(self, 
                 img: torch.Tensor,
@@ -98,62 +253,30 @@ class MMST_ViT(nn.Module):
                 yz: torch.Tensor = None): 
         
         # Conditional input modulation
-        if self.cond:
+        if bool(self.cond) == True:
             img = img * yz
+        out = []
 
-        out, attns = [], {}
+        if self.mask_modality == 'text':
 
+            out = self._text_maskout_forward(img, met)
 
-        if self.mask_modality != 'text':
-            context = self.text_embed(context)
-            context, text_attn = self.text_transformer(context)
-            context = context.mean(dim=1)
-            context = torch.unsqueeze(context, dim=1)
-            attns['ItextAttn'] = [text_attn]
+        elif self.mask_modality == 'met':
 
-        for index, (img_embed, met_embed) in enumerate(zip(self.img_embeds, self.met_embeds)):
-            if self.mask_modality != 'image':
-                img_t = img[..., :index+1]
-            else:
-                img_t = torch.zeros_like(img[..., :index+1])
+            out, text_attn = self._met_maskout_forward(img, context)
 
-            if self.mask_modality != 'met':
-                met_t = met[:, :, :index+1, :]
-            else:
-                met_t = torch.zeros_like(met[:, :, :index+1, :])
-
-            ImgMet_t, ImgMetAttn = self.process_embedding(img_t, 
-                                             img_embed, 
-                                             met_t, 
-                                             met_embed, 
-                                             self.spatialmet_encoder)
-            ImgMet_t_mean = ImgMet_t.mean(dim=1)
-           
-            if self.mask_modality != 'text':
-                ImgMet_t = torch.unsqueeze(ImgMet_t_mean, dim = 1)
-                ImgMetText_t, MMAttn = self.cross_attn_encoder(ImgMet_t, context)
-                ImgMetText_t = ImgMetText_t.mean(dim=1)
-                ImgMetText_t = torch.unsqueeze(ImgMetText_t, dim = 1)
-                ImgMetText_t = torch.cat((ImgMetText_t, ImgMet_t), dim = 1)
-                ImgMetText_t = ImgMetText_t.view(ImgMetText_t.size(0), -1)
-                out.append(ImgMetText_t)
-            else:
-                out.append(ImgMet_t_mean)
-
-            # key_imgmet = f'ImgMetAttn_{index}'
-            # key_mmattn = f'MMAttn_{index}'
-            # if key_imgmet not in attns:
-            #     attns[key_imgmet] = []
+        elif self.mask_modality == 'text-met':
             
-            #     attns[key_mmattn] = []
+            out = self._textmet_maskout_forward(img)
 
-            # attns[key_imgmet].append(ImgMetAttn)
-            # attns[key_mmattn].append(MMAttn)
-        
-        preds, logits = self.head(out)
+        elif self.mask_modality == None:
+            
+            out, text_attn = self._forward(img, context, met)
 
-        return preds, logits , attns
 
+        preds = self.head(out)
+
+        return preds, text_attn
 
 
 

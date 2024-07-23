@@ -12,22 +12,26 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from model import configs
 from src import losses
+
+from model.mmst import MMST_ViT
+
+
 #======================================================================================================================================#
 #====================================================== Training Config ===============================================================#
 #======================================================================================================================================#   
-def is_dist_avail_and_initialized():
-    if not dist.is_available():
-        return False
-    if not dist.is_initialized():
-        return False
-    return True
+# def is_dist_avail_and_initialized():
+#     if not dist.is_available():
+#         return False
+#     if not dist.is_initialized():
+#         return False
+#     return True
 
-def get_rank():
-    if not is_dist_avail_and_initialized():
-        return 0
-    return dist.get_rank()
+# def get_rank():
+#     if not is_dist_avail_and_initialized():
+#         return 0
+#     return dist.get_rank()
 
-seed = 1987 + get_rank()
+seed = 1987 #+ get_rank()
 torch.manual_seed(seed)
 np.random.seed(seed)
 
@@ -50,38 +54,7 @@ class EarlyStopping():
         if self.counter >= self.tolerance:  
                 self.early_stop = True
 
-def save_loss_df(loss_stat, loss_df_name, loss_fig_name):
 
-    df = pd.DataFrame.from_dict(loss_stat).reset_index().melt(id_vars=['index']).rename(columns={"index":"epochs"})
-    df.to_csv(loss_df_name) 
-    plt.figure(figsize=(12,8))
-    sns.lineplot(data=df, x = "epochs", y="value", hue="variable").set_title('Train-Val Loss/Epoch')
-    plt.ylim(0, df['value'].max())
-    plt.savefig(loss_fig_name, dpi = 300)
-
-def save_checkpoint(state, filename="checkpoint.pth"):
-    """
-    Saves a model checkpoint during training.
-
-    Parameters:
-    - state (dict): State to save, including model and optimizer states.
-    - filename (str): File name to save the checkpoint.
-    """
-    torch.save(state, filename)
-
-def load_checkpoint(checkpoint_path, model, optimizer):
-    """
-    Loads a checkpoint into a model and optimizer.
-
-    Parameters:
-    - checkpoint_path (str): Path to the checkpoint file.
-    - model (nn.Module): Model to load the checkpoint into.
-    - optimizer (torch.optim): Optimizer to load the checkpoint into.
-    """
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint['state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
-    return checkpoint['epoch'], checkpoint['best_val_loss']
 
 class ViTYieldEst:
     """
@@ -121,7 +94,7 @@ class ViTYieldEst:
         params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.Adam(params, lr=self.lr, weight_decay=self.wd)
 
-        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/' + 'EXP_' + self.exp
+        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/July/' + 'EXP_' + self.exp
 
         self.best_model_name = os.path.join(self.exp_output_dir, 'best_model_' + self.exp + '.pth')
         self.last_model_name = os.path.join(self.exp_output_dir, 'last_model_' + self.exp + '.pth')
@@ -134,7 +107,6 @@ class ViTYieldEst:
         self.test_df_name = os.path.join(self.exp_output_dir, self.exp + '_test.csv')
         self.timeseries_fig = os.path.join(self.exp_output_dir, self.exp + '_timeseries.png')
         self.scatterplot = os.path.join(self.exp_output_dir, self.exp + '_scatterplot.png')
-
 
     def train(self, data_loader_training, data_loader_validate, loss: str, epochs: int, loss_stop_tolerance: int):
         """
@@ -166,12 +138,13 @@ class ViTYieldEst:
                 ytrain_true = sample['mask'][:,:,:,:,0].to(device)
                 embtext_train = sample['EmbText']
                 yieldzone_train = sample['YZ'].to(device)
+                train_weights = sample['weight'].to(device)
 
-                list_ytrain_pred = self.model(xtrain, embtext_train, mettrain, yieldzone_train) #, _, _
+                list_ytrain_pred, _ = self.model(xtrain, embtext_train, mettrain, yieldzone_train) 
 
                 self.optimizer.zero_grad()
 
-                train_loss = self._calculate_timeseries_loss(ytrain_true, list_ytrain_pred, loss)
+                train_loss = self._calculate_timeseries_loss(ytrain_true, list_ytrain_pred, loss, train_weights)
 
                 train_loss.backward()
 
@@ -179,7 +152,7 @@ class ViTYieldEst:
                 train_epoch_loss += train_loss.item() 
 
             # VALIDATION    
-            # self.model.eval()  # Set the model to evaluation mode
+            self.model.eval()  # Set the model to evaluation mode
             with torch.no_grad():
                 val_epoch_loss = 0
                 for batch, sample in enumerate(data_loader_validate):
@@ -189,9 +162,10 @@ class ViTYieldEst:
                     yvalid_true = sample['mask'][:,:,:,:,0].to(device)
                     embtext_valid = sample['EmbText']
                     yieldzone_valid = sample['YZ'].to(device)
+                    valid_weights = sample['weight'].to(device)
 
-                    list_yvalid_pred = self.model(xvalid, embtext_valid, metvalid, yieldzone_valid)  #, _, _ 
-                    valid_loss = self._calculate_timeseries_loss(yvalid_true, list_yvalid_pred, loss)
+                    list_yvalid_pred, _ = self.model(xvalid, embtext_valid, metvalid, yieldzone_valid)   
+                    valid_loss = self._calculate_timeseries_loss(yvalid_true, list_yvalid_pred, loss, valid_weights)
 
                     val_epoch_loss += valid_loss.item()
 
@@ -208,14 +182,14 @@ class ViTYieldEst:
             'best_val_loss': best_val_loss
             }
 
-            save_checkpoint(checkpoint, filename= os.path.join(self.checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pth"))
+            self._save_checkpoint(checkpoint, filename= os.path.join(self.checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pth"))
 
             if (val_epoch_loss/len(data_loader_validate)) < best_val_loss or epoch==0:
                         
                 best_val_loss=(val_epoch_loss/len(data_loader_validate))
                 torch.save(self.model.state_dict(), self.best_model_name)
 
-                save_checkpoint(checkpoint, filename = self.best_checkpoint_dir)
+                self._save_checkpoint(checkpoint, filename = self.best_checkpoint_dir)
 
                 # early_stopping.update(False)
                 print(f'=============================== Best model Saved! Val MSE: {best_val_loss:.4f}')
@@ -231,16 +205,181 @@ class ViTYieldEst:
                 torch.save(self.model.state_dict(), self.last_model_name)
                 break
 
-        save_loss_df(loss_stats, self.loss_df_name, self.loss_fig_name)
+        self._save_loss_df(loss_stats, self.loss_df_name, self.loss_fig_name)
 
-    def calculate_loss(self, y_pred, y_true, loss_type):
+    def predict(self, config, data_loader, category: str, iter: int):
+
+        print(f"*************** Eval Process: No YZ Strategy! **************")
+        model = MMST_ViT(config, cond = False).to(device)
+        model.load_state_dict(torch.load(self.best_model_name))
+        output_files =[]
+        attn_outs =  None
+        for i in range(iter):
+            with torch.no_grad():
+                for batch, sample in enumerate(data_loader):
+                    x = sample['image'].to(device)
+                    met = sample['met'].to(device)
+                    y = sample['mask'].detach().cpu().numpy()
+                    block_id = sample['block']
+                    block_cultivar_id = sample['cultivar']
+                    block_x_coords = sample['X']
+                    block_y_coords = sample['Y']
+                    embmatrix = sample['EmbText']
+                    yieldzone = sample['YZ'].to(device)
+                
+                    pred_list, text_attn_list = self.model(x, embmatrix, met, yieldzone)
+
+                    if category == 'train':
+                        np.save(os.path.join(self.exp_output_dir, f'attn_scores/train_attn_scores_{batch}.npy'), text_attn_list[0].detach().cpu().numpy())
+
+                        # np.save(f'/data2/hkaman/Projects/ViT/EXPs/July/attnscores/train_attn_scores_{batch}.npy', text_attn_list[0].detach().cpu().numpy())
+
+
+                    this_batch = {"block": block_id, 
+                                        "cultivar": block_cultivar_id, 
+                                        "X": block_x_coords, "Y": block_y_coords,
+                                        "ytrue": y}
+
+                    # Dynamically add predictions to the dictionary
+                    for i, pred in enumerate(pred_list):
+                        key = f"ypred_w{i+1}"  # Creates keys like ypred_w1, ypred_w2, ..., ypred_wN
+                        this_batch[key] = pred.detach().cpu().numpy()
+
+                    output_files.append(this_batch)
+
+                modified_df = self._return_modified_pred_df(output_files, None, 16)
+                if category == 'train':
+                    name_tr = self.train_df_name[:-4]  + '.csv'
+                    modified_df.to_csv(name_tr)
+                    print("train inference is done!")
+
+                elif category == 'valid':
+                    name_val = self.valid_df_name[:-4]  + '.csv'
+                    modified_df.to_csv(name_val)
+                    print("validation inference is done!")
+                    
+                elif category == 'test':
+                    name_te = self.test_df_name[:-4] + '.csv'
+                    modified_df.to_csv(name_te)
+                    print("test inference is done!")
+
+    def _return_modified_pred_df(self, pred_npy, blocks_list, wsize=None):
+        if blocks_list is None: 
+            all_block_names = [dict['block'] for dict in pred_npy]#[0]
+            blocks_list = list(set(item for sublist in all_block_names for item in sublist))
+
+
+        OutDF = pd.DataFrame()
+        columns = ['block', 'cultivar', 'x', 'y', 'ytrue']
+        data = {col: [] for col in columns}  # Initialize dictionary for DataFrame
+
+        # Initialize lists for predictions dynamically based on the first item's keys
+        pred_keys = [key for key in pred_npy[0].keys() if key.startswith('ypred')]
+        for key in pred_keys:
+            data[key] = []
+
+        for block in blocks_list:
+            name_split = os.path.split(block)[-1]
+            block_name = name_split.replace(name_split[7:], '')
+            root_name = name_split.replace(name_split[:4], '').replace(name_split[3], '')
+            block_id = root_name
+            
+            res = {key: configs.blocks_information[key] for key in configs.blocks_information.keys() & {block_name}}
+            list_d = res.get(block_name)
+            cultivar_id = list_d[1]
+        
+            for l in range(len(pred_npy)):
+                tb_pred_indices = [i for i, x in enumerate(pred_npy[l]['block']) if x == block]
+                if len(tb_pred_indices) !=0:   
+                    for index in tb_pred_indices:
+
+                        x0 = pred_npy[l]['X'][index]
+                        y0 = pred_npy[l]['Y'][index]
+                        x_vector, y_vector = self._xy_vector_generator(x0, y0, wsize)
+                        data['x'].append(x_vector)
+                        data['y'].append(y_vector)
+                        data['ytrue'].append(pred_npy[l]['ytrue'][index].flatten())
+
+                        tb_block_id = np.array(len(pred_npy[l]['ytrue'][index].flatten())*[block_id], dtype=np.int32)
+                        data['block'].append(tb_block_id)
+
+                        tb_cultivar_id = np.array(len(pred_npy[l]['ytrue'][index].flatten())*[cultivar_id], dtype=np.int8)
+                        data['cultivar'].append(tb_cultivar_id)
+
+
+
+                        # Handle predictions dynamically
+                        for key in pred_keys:
+                            flattened_pred = pred_npy[l][key][index].flatten()
+                            data[key].append(flattened_pred)
+
+        empty_dict = {key: None for key in data.keys()}
+        # Convert lists to numpy arrays for consistency
+        for key in data:
+            if data[key]:  # Ensure there's data to concatenate
+                # print(len(data[key]))
+                output = np.concatenate(data[key])
+                empty_dict[key] = output
+                # print(key, output.shape)
+
+        # Create DataFrame from data dictionary
+        OutDF = pd.DataFrame(empty_dict)
+        return OutDF
+    
+    def _xy_vector_generator(self, x0, y0, wsize):
+
+        x_vector, y_vector = [], []
+        
+        for i in range(x0, x0+wsize):
+            for j in range(y0, y0+wsize):
+                x_vector.append(i)
+                y_vector.append(j)
+
+        return x_vector, y_vector 
+    
+    def _save_loss_df(self, loss_stat, loss_df_name, loss_fig_name):
+
+        df = pd.DataFrame.from_dict(loss_stat).reset_index().melt(id_vars=['index']).rename(columns={"index":"epochs"})
+        df.to_csv(loss_df_name) 
+        plt.figure(figsize=(12,8))
+        sns.lineplot(data=df, x = "epochs", y="value", hue="variable").set_title('Train-Val Loss/Epoch')
+        plt.ylim(0, df['value'].max())
+        plt.savefig(loss_fig_name, dpi = 300)
+
+    def _save_checkpoint(self, state, filename="checkpoint.pth"):
+        """
+        Saves a model checkpoint during training.
+
+        Parameters:
+        - state (dict): State to save, including model and optimizer states.
+        - filename (str): File name to save the checkpoint.
+        """
+        torch.save(state, filename)
+
+    def _load_checkpoint(self, checkpoint_path, model, optimizer):
+        """
+        Loads a checkpoint into a model and optimizer.
+
+        Parameters:
+        - checkpoint_path (str): Path to the checkpoint file.
+        - model (nn.Module): Model to load the checkpoint into.
+        - optimizer (torch.optim): Optimizer to load the checkpoint into.
+        """
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        return checkpoint['epoch'], checkpoint['best_val_loss']
+
+    def _calculate_loss(self, y_pred, y_true, loss_type, weight):
 
         if loss_type == 'mse':
             return losses.mse_loss(y_pred, y_true)
+        elif loss_type == 'wmse':
+            return losses.weighted_mse_loss(y_pred, y_true, weight)
         elif loss_type == 'morans':
             return losses.MoranCalculator()(y_pred, y_true)
 
-    def _calculate_timeseries_loss(self, y_true, list_y_pred, loss_type):
+    def _calculate_timeseries_loss(self, y_true, list_y_pred, loss_type, weights):
         """
         Calculates the cumulative mean squared error loss for a list of predictions or a single prediction.
 
@@ -254,262 +393,343 @@ class ViTYieldEst:
         """
 
         if isinstance(list_y_pred, list):
-            losses_list = [self.calculate_loss(y_pred, y_true, loss_type) for y_pred in list_y_pred]
+            losses_list = [self._calculate_loss(y_pred, y_true, loss_type, weights) for y_pred in list_y_pred]
             total_loss = sum(losses_list)
         else:
             # list_y_pred is a single tensor
             y_pred = list_y_pred
-            total_loss = self.calculate_loss(y_pred, y_true, loss_type)
+            total_loss = self._calculate_loss(y_pred, y_true, loss_type, weights)
 
         return total_loss
     
-    def predict(self, model, data_loader, category: str, iter: int):
 
-        model.load_state_dict(torch.load(self.best_model_name))
-        output_files, tokens = [], []
-        text_array_list = []
 
-        for i in range(iter):
-            # self.model.eval()
-            with torch.no_grad():
-                data_dict = {}
-                for sample in data_loader:
-                    x = sample['image'].to(device)
-                    met = sample['met'].to(device)
-                    y = sample['mask'].detach().cpu().numpy()
 
-                    block_id = sample['block']
-                    block_cultivar_id = sample['cultivar']
-                    block_x_coords = sample['X']
-                    block_y_coords = sample['Y']
 
-                    embtext = sample['EmbText']
-                    yieldzone = sample['YZ'].to(device)
-                    pred_list = self.model(x, embtext, met, yieldzone) #, attn_list, batch_tokens
 
-                    this_batch = {"block": block_id, 
-                                        "cultivar": block_cultivar_id, 
-                                        "X": block_x_coords, "Y": block_y_coords,
-                                        "ytrue": y, 
-                                        "ypred_w1": pred_list[0].detach().cpu().numpy(),
-                                        "ypred_w2": pred_list[1].detach().cpu().numpy(),
-                                        "ypred_w3": pred_list[2].detach().cpu().numpy(),
-                                        "ypred_w4": pred_list[3].detach().cpu().numpy(),
-                                        "ypred_w5": pred_list[4].detach().cpu().numpy(),
-                                        "ypred_w6": pred_list[5].detach().cpu().numpy(),
-                                        "ypred_w7": pred_list[6].detach().cpu().numpy(),
-                                        "ypred_w8": pred_list[7].detach().cpu().numpy(),
-                                        "ypred_w9": pred_list[8].detach().cpu().numpy(),
-                                        "ypred_w10": pred_list[9].detach().cpu().numpy(),
-                                        "ypred_w11": pred_list[10].detach().cpu().numpy(),
-                                        "ypred_w12": pred_list[11].detach().cpu().numpy(),
-                                        "ypred_w13": pred_list[12].detach().cpu().numpy(),
-                                        "ypred_w14": pred_list[13].detach().cpu().numpy(),
-                                        "ypred_w15": pred_list[14].detach().cpu().numpy()}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # def predict(self, model, data_loader, category: str, iter: int):
+
+    #     model.load_state_dict(torch.load(self.best_model_name))
+    #     output_files, tokens = [], []
+    #     text_array_list = []
+
+    #     for i in range(iter):
+    #         # self.model.eval()
+    #         with torch.no_grad():
+    #             data_dict = {}
+    #             for sample in data_loader:
+    #                 x = sample['image'].to(device)
+    #                 met = sample['met'].to(device)
+    #                 y = sample['mask'].detach().cpu().numpy()
+
+    #                 block_id = sample['block']
+    #                 block_cultivar_id = sample['cultivar']
+    #                 block_x_coords = sample['X']
+    #                 block_y_coords = sample['Y']
+
+    #                 embtext = sample['EmbText']
+    #                 yieldzone = sample['YZ'].to(device)
+    #                 pred_list, _ = self.model(x, embtext, met, yieldzone) #, attn_list, batch_tokens
+
+    #                 this_batch = {"block": block_id, 
+    #                                     "cultivar": block_cultivar_id, 
+    #                                     "X": block_x_coords, "Y": block_y_coords,
+    #                                     "ytrue": y, 
+    #                                     "ypred_w1": pred_list[0].detach().cpu().numpy(),
+    #                                     "ypred_w2": pred_list[1].detach().cpu().numpy(),
+    #                                     "ypred_w3": pred_list[2].detach().cpu().numpy(),
+    #                                     "ypred_w4": pred_list[3].detach().cpu().numpy(),
+    #                                     "ypred_w5": pred_list[4].detach().cpu().numpy(),
+    #                                     "ypred_w6": pred_list[5].detach().cpu().numpy(),
+    #                                     "ypred_w7": pred_list[6].detach().cpu().numpy(),
+    #                                     "ypred_w8": pred_list[7].detach().cpu().numpy(),
+    #                                     "ypred_w9": pred_list[8].detach().cpu().numpy(),
+    #                                     "ypred_w10": pred_list[9].detach().cpu().numpy(),
+    #                                     "ypred_w11": pred_list[10].detach().cpu().numpy(),
+    #                                     "ypred_w12": pred_list[11].detach().cpu().numpy(),
+    #                                     "ypred_w13": pred_list[12].detach().cpu().numpy(),
+    #                                     "ypred_w14": pred_list[13].detach().cpu().numpy(),
+    #                                     "ypred_w15": pred_list[14].detach().cpu().numpy()}
                     
-                    output_files.append(this_batch)
-                    # tokens.extend(batch_tokens)    
-                    # text_array_list.append(attn_list[0]) 
+    #                 output_files.append(this_batch)
+    #                 # tokens.extend(batch_tokens)    
+    #                 # text_array_list.append(attn_list[0]) 
 
-                    # unique_id = block_id.item()  
-                    # idx = 0
-                    # for block in block_id:
-                    #     data_dict[idx] = {'block': block, 'tokens': batch_tokens[idx], 'text_array': attn_list[0][idx, ...]}
-                    #     idx += 1 
-                # Save the structured array as an .npy file
-                # np.save('attn_scores.npy', data_dict)
+    #                 # unique_id = block_id.item()  
+    #                 # idx = 0
+    #                 # for block in block_id:
+    #                 #     data_dict[idx] = {'block': block, 'tokens': batch_tokens[idx], 'text_array': attn_list[0][idx, ...]}
+    #                 #     idx += 1 
+    #             # Save the structured array as an .npy file
+    #             # np.save('attn_scores.npy', data_dict)
 
-                modified_df = self._return_modified_pred_df(output_files, None, 16)
-                # Convert the list to a NumPy array
-                # text_array_list = np.concatenate(text_array_list, axis = 0)
-                # np.save('text_array.npy', text_array_list)
-                # np.save('im_array_w15.npy', attn_list[1][-1])
-                # np.save('imt_array.npy', attn_list[2])
-                # import json
-                # with open('attn0.json', 'w') as json_file:
-                #     json.dump(attn_list[0], json_file)
-                # with open('attn1.json', 'w') as json_file:
-                #     json.dump(attn_list[0], json_file)
-                # with open('attn2.json', 'w') as json_file:
-                #     json.dump(attn_list[0], json_file)
+    #             modified_df = self._return_modified_pred_df(output_files, None, 16)
+    #             # Convert the list to a NumPy array
+    #             # text_array_list = np.concatenate(text_array_list, axis = 0)
+    #             # np.save('text_array.npy', text_array_list)
+    #             # np.save('im_array_w15.npy', attn_list[1][-1])
+    #             # np.save('imt_array.npy', attn_list[2])
+    #             # import json
+    #             # with open('attn0.json', 'w') as json_file:
+    #             #     json.dump(attn_list[0], json_file)
+    #             # with open('attn1.json', 'w') as json_file:
+    #             #     json.dump(attn_list[0], json_file)
+    #             # with open('attn2.json', 'w') as json_file:
+    #             #     json.dump(attn_list[0], json_file)
 
-                if category == 'train':
-                    name_tr = self.train_df_name[:-4] + '.csv'
-                    modified_df.to_csv(name_tr)
-                    print("train inference is done!")
-                elif category == 'valid':
-                    name_val = self.valid_df_name[:-4]+ '.csv' #+ f'_{i}' +
-                    modified_df.to_csv(name_val)
-                    print("validation inference is done!")
-                elif category == 'test':
-                    name_te = self.test_df_name[:-4] + '.csv'
-                    modified_df.to_csv(name_te)
-                    print("test inference is done!")
+    #             if category == 'train':
+    #                 name_tr = self.train_df_name[:-4] + '.csv'
+    #                 modified_df.to_csv(name_tr)
+    #                 print("train inference is done!")
+    #             elif category == 'valid':
+    #                 name_val = self.valid_df_name[:-4]+ '.csv' #+ f'_{i}' +
+    #                 modified_df.to_csv(name_val)
+    #                 print("validation inference is done!")
+    #             elif category == 'test':
+    #                 name_te = self.test_df_name[:-4] + '.csv'
+    #                 modified_df.to_csv(name_te)
+    #                 print("test inference is done!")
 
-    def _return_modified_pred_df(self, pred_npy, blocks_list, wsize = None):
+    # def _return_modified_pred_df(self, pred_npy, blocks_list, wsize = None):
 
-        if blocks_list is None: 
-            all_block_names = [dict['block'] for dict in pred_npy]#[0]
-            blocks_list = list(set(item for sublist in all_block_names for item in sublist))
+    #     if blocks_list is None: 
+    #         all_block_names = [dict['block'] for dict in pred_npy]#[0]
+    #         blocks_list = list(set(item for sublist in all_block_names for item in sublist))
 
-        OutDF = pd.DataFrame()
-        out_ytrue, out_blocks, out_cultivars, out_x, out_y = [], [], [], [], []
-        out_ypred_w1, out_ypred_w2, out_ypred_w3, out_ypred_w4, out_ypred_w5 = [], [], [], [], []
-        out_ypred_w6, out_ypred_w7, out_ypred_w8, out_ypred_w9, out_ypred_w10 = [], [], [], [], []
-        out_ypred_w11, out_ypred_w12, out_ypred_w13, out_ypred_w14, out_ypred_w15 = [], [], [], [], []
+    #     OutDF = pd.DataFrame()
+    #     out_ytrue, out_blocks, out_cultivars, out_x, out_y = [], [], [], [], []
+    #     out_ypred_w1, out_ypred_w2, out_ypred_w3, out_ypred_w4, out_ypred_w5 = [], [], [], [], []
+    #     out_ypred_w6, out_ypred_w7, out_ypred_w8, out_ypred_w9, out_ypred_w10 = [], [], [], [], []
+    #     out_ypred_w11, out_ypred_w12, out_ypred_w13, out_ypred_w14, out_ypred_w15 = [], [], [], [], []
 
-        out_ypreds = {f'ypred_w{p}': [] for p in range(1, 16, 1)}
+    #     out_ypreds = {f'ypred_w{p}': [] for p in range(1, 16, 1)}
         
-        for block in blocks_list:  
+    #     for block in blocks_list:  
             
-            name_split = os.path.split(block)[-1]
-            block_name = name_split.replace(name_split[7:], '')
-            root_name = name_split.replace(name_split[:4], '').replace(name_split[3], '')
-            block_id = root_name
+    #         name_split = os.path.split(block)[-1]
+    #         block_name = name_split.replace(name_split[7:], '')
+    #         root_name = name_split.replace(name_split[:4], '').replace(name_split[3], '')
+    #         block_id = root_name
             
-            res = {key: configs.blocks_information[key] for key in configs.blocks_information.keys() & {block_name}}
-            list_d = res.get(block_name)
-            cultivar_id = list_d[1]
+    #         res = {key: configs.blocks_information[key] for key in configs.blocks_information.keys() & {block_name}}
+    #         list_d = res.get(block_name)
+    #         cultivar_id = list_d[1]
 
-            for l in range(len(pred_npy)):
-                tb_pred_indices = [i for i, x in enumerate(pred_npy[l]['block']) if x == block]
-                if len(tb_pred_indices) !=0:   
-                    for index in tb_pred_indices:
+    #         for l in range(len(pred_npy)):
+    #             tb_pred_indices = [i for i, x in enumerate(pred_npy[l]['block']) if x == block]
+    #             if len(tb_pred_indices) !=0:   
+    #                 for index in tb_pred_indices:
 
-                        x0 = pred_npy[l]['X'][index]
-                        y0 = pred_npy[l]['Y'][index]
-                        x_vector, y_vector = self.xy_vector_generator(x0, y0, wsize)
-                        out_x.append(x_vector)
-                        out_y.append(y_vector)
+    #                     x0 = pred_npy[l]['X'][index]
+    #                     y0 = pred_npy[l]['Y'][index]
+    #                     x_vector, y_vector = self._xy_vector_generator(x0, y0, wsize)
+    #                     out_x.append(x_vector)
+    #                     out_y.append(y_vector)
         
-                        tb_ytrue = pred_npy[l]['ytrue'][index]
-                        tb_flatten_ytrue = tb_ytrue.flatten()
-                        out_ytrue.append(tb_flatten_ytrue)
+    #                     tb_ytrue = pred_npy[l]['ytrue'][index]
+    #                     tb_flatten_ytrue = tb_ytrue.flatten()
+    #                     out_ytrue.append(tb_flatten_ytrue)
 
-                        tb_ypred_w1 = pred_npy[l]['ypred_w1'][index]
-                        tb_flatten_ypred_w1 = tb_ypred_w1.flatten()
-                        out_ypred_w1.append(tb_flatten_ypred_w1)
+    #                     tb_ypred_w1 = pred_npy[l]['ypred_w1'][index]
+    #                     tb_flatten_ypred_w1 = tb_ypred_w1.flatten()
+    #                     out_ypred_w1.append(tb_flatten_ypred_w1)
 
-                        tb_ypred_w2 = pred_npy[l]['ypred_w2'][index]
-                        tb_flatten_ypred_w2 = tb_ypred_w2.flatten()
-                        out_ypred_w2.append(tb_flatten_ypred_w2)
+    #                     tb_ypred_w2 = pred_npy[l]['ypred_w2'][index]
+    #                     tb_flatten_ypred_w2 = tb_ypred_w2.flatten()
+    #                     out_ypred_w2.append(tb_flatten_ypred_w2)
 
-                        tb_ypred_w3 = pred_npy[l]['ypred_w3'][index]
-                        tb_flatten_ypred_w3 = tb_ypred_w3.flatten()
-                        out_ypred_w3.append(tb_flatten_ypred_w3)
+    #                     tb_ypred_w3 = pred_npy[l]['ypred_w3'][index]
+    #                     tb_flatten_ypred_w3 = tb_ypred_w3.flatten()
+    #                     out_ypred_w3.append(tb_flatten_ypred_w3)
 
-                        tb_ypred_w4 = pred_npy[l]['ypred_w4'][index]
-                        tb_flatten_ypred_w4 = tb_ypred_w4.flatten()
-                        out_ypred_w4.append(tb_flatten_ypred_w4)
+    #                     tb_ypred_w4 = pred_npy[l]['ypred_w4'][index]
+    #                     tb_flatten_ypred_w4 = tb_ypred_w4.flatten()
+    #                     out_ypred_w4.append(tb_flatten_ypred_w4)
 
-                        tb_ypred_w5 = pred_npy[l]['ypred_w5'][index]
-                        tb_flatten_ypred_w5 = tb_ypred_w5.flatten()
-                        out_ypred_w5.append(tb_flatten_ypred_w5)
+    #                     tb_ypred_w5 = pred_npy[l]['ypred_w5'][index]
+    #                     tb_flatten_ypred_w5 = tb_ypred_w5.flatten()
+    #                     out_ypred_w5.append(tb_flatten_ypred_w5)
 
-                        tb_ypred_w6 = pred_npy[l]['ypred_w6'][index]
-                        tb_flatten_ypred_w6 = tb_ypred_w6.flatten()
-                        out_ypred_w6.append(tb_flatten_ypred_w6)
+    #                     tb_ypred_w6 = pred_npy[l]['ypred_w6'][index]
+    #                     tb_flatten_ypred_w6 = tb_ypred_w6.flatten()
+    #                     out_ypred_w6.append(tb_flatten_ypred_w6)
 
-                        tb_ypred_w7 = pred_npy[l]['ypred_w7'][index]
-                        tb_flatten_ypred_w7 = tb_ypred_w7.flatten()
-                        out_ypred_w7.append(tb_flatten_ypred_w7)
+    #                     tb_ypred_w7 = pred_npy[l]['ypred_w7'][index]
+    #                     tb_flatten_ypred_w7 = tb_ypred_w7.flatten()
+    #                     out_ypred_w7.append(tb_flatten_ypred_w7)
 
-                        tb_ypred_w8 = pred_npy[l]['ypred_w8'][index]
-                        tb_flatten_ypred_w8 = tb_ypred_w8.flatten()
-                        out_ypred_w8.append(tb_flatten_ypred_w8)
+    #                     tb_ypred_w8 = pred_npy[l]['ypred_w8'][index]
+    #                     tb_flatten_ypred_w8 = tb_ypred_w8.flatten()
+    #                     out_ypred_w8.append(tb_flatten_ypred_w8)
 
-                        tb_ypred_w9 = pred_npy[l]['ypred_w9'][index]
-                        tb_flatten_ypred_w9 = tb_ypred_w9.flatten()
-                        out_ypred_w9.append(tb_flatten_ypred_w9)
+    #                     tb_ypred_w9 = pred_npy[l]['ypred_w9'][index]
+    #                     tb_flatten_ypred_w9 = tb_ypred_w9.flatten()
+    #                     out_ypred_w9.append(tb_flatten_ypred_w9)
 
-                        tb_ypred_w10 = pred_npy[l]['ypred_w10'][index]
-                        tb_flatten_ypred_w10 = tb_ypred_w10.flatten()
-                        out_ypred_w10.append(tb_flatten_ypred_w10)
+    #                     tb_ypred_w10 = pred_npy[l]['ypred_w10'][index]
+    #                     tb_flatten_ypred_w10 = tb_ypred_w10.flatten()
+    #                     out_ypred_w10.append(tb_flatten_ypred_w10)
 
-                        tb_ypred_w11 = pred_npy[l]['ypred_w11'][index]
-                        tb_flatten_ypred_w11 = tb_ypred_w11.flatten()
-                        out_ypred_w11.append(tb_flatten_ypred_w11)
+    #                     tb_ypred_w11 = pred_npy[l]['ypred_w11'][index]
+    #                     tb_flatten_ypred_w11 = tb_ypred_w11.flatten()
+    #                     out_ypred_w11.append(tb_flatten_ypred_w11)
 
-                        tb_ypred_w12 = pred_npy[l]['ypred_w12'][index]
-                        tb_flatten_ypred_w12 = tb_ypred_w12.flatten()
-                        out_ypred_w12.append(tb_flatten_ypred_w12)
+    #                     tb_ypred_w12 = pred_npy[l]['ypred_w12'][index]
+    #                     tb_flatten_ypred_w12 = tb_ypred_w12.flatten()
+    #                     out_ypred_w12.append(tb_flatten_ypred_w12)
 
-                        tb_ypred_w13 = pred_npy[l]['ypred_w13'][index]
-                        tb_flatten_ypred_w13 = tb_ypred_w13.flatten()
-                        out_ypred_w13.append(tb_flatten_ypred_w13)
+    #                     tb_ypred_w13 = pred_npy[l]['ypred_w13'][index]
+    #                     tb_flatten_ypred_w13 = tb_ypred_w13.flatten()
+    #                     out_ypred_w13.append(tb_flatten_ypred_w13)
 
-                        tb_ypred_w14 = pred_npy[l]['ypred_w14'][index]
-                        tb_flatten_ypred_w14 = tb_ypred_w14.flatten()
-                        out_ypred_w14.append(tb_flatten_ypred_w14)
+    #                     tb_ypred_w14 = pred_npy[l]['ypred_w14'][index]
+    #                     tb_flatten_ypred_w14 = tb_ypred_w14.flatten()
+    #                     out_ypred_w14.append(tb_flatten_ypred_w14)
 
-                        tb_ypred_w15 = pred_npy[l]['ypred_w15'][index]
-                        tb_flatten_ypred_w15 = tb_ypred_w15.flatten()
-                        out_ypred_w15.append(tb_flatten_ypred_w15)
-                        # list_ypred = {f'ypred_w{p}': pred_npy[l][f'ypred_w{p}'][index].flatten() for p in range(1, 16, 1)}
-                        # for p in out_ypreds:
-                        #     out_ypreds[p].append(list_ypred[p])
+    #                     tb_ypred_w15 = pred_npy[l]['ypred_w15'][index]
+    #                     tb_flatten_ypred_w15 = tb_ypred_w15.flatten()
+    #                     out_ypred_w15.append(tb_flatten_ypred_w15)
+    #                     # list_ypred = {f'ypred_w{p}': pred_npy[l][f'ypred_w{p}'][index].flatten() for p in range(1, 16, 1)}
+    #                     # for p in out_ypreds:
+    #                     #     out_ypreds[p].append(list_ypred[p])
 
-                        tb_block_id = np.array(len(tb_flatten_ytrue)*[block_id], dtype=np.int32)
-                        out_blocks.append(tb_block_id)
+    #                     tb_block_id = np.array(len(tb_flatten_ytrue)*[block_id], dtype=np.int32)
+    #                     out_blocks.append(tb_block_id)
 
-                        tb_cultivar_id = np.array(len(tb_flatten_ytrue)*[cultivar_id], dtype=np.int8)
-                        out_cultivars.append(tb_cultivar_id)
+    #                     tb_cultivar_id = np.array(len(tb_flatten_ytrue)*[cultivar_id], dtype=np.int8)
+    #                     out_cultivars.append(tb_cultivar_id)
 
-        out_blocks = np.concatenate(out_blocks)
-        out_cultivars = np.concatenate(out_cultivars)
-        out_x = np.concatenate(out_x)
-        out_y = np.concatenate(out_y)
-        out_ytrue = np.concatenate(out_ytrue)
-        out_ypred_w1 = np.concatenate(out_ypred_w1)
-        out_ypred_w2 = np.concatenate(out_ypred_w2)
-        out_ypred_w3 = np.concatenate(out_ypred_w3)
-        out_ypred_w4 = np.concatenate(out_ypred_w4)
-        out_ypred_w5 = np.concatenate(out_ypred_w5)
-        out_ypred_w6 = np.concatenate(out_ypred_w6)
-        out_ypred_w7 = np.concatenate(out_ypred_w7)
-        out_ypred_w8 = np.concatenate(out_ypred_w8)
-        out_ypred_w9 = np.concatenate(out_ypred_w9)
-        out_ypred_w10 = np.concatenate(out_ypred_w10)
-        out_ypred_w11 = np.concatenate(out_ypred_w11)
-        out_ypred_w12 = np.concatenate(out_ypred_w12)
-        out_ypred_w13 = np.concatenate(out_ypred_w13)
-        out_ypred_w14 = np.concatenate(out_ypred_w14)
-        out_ypred_w15 = np.concatenate(out_ypred_w15)
+    #     out_blocks = np.concatenate(out_blocks)
+    #     out_cultivars = np.concatenate(out_cultivars)
+    #     out_x = np.concatenate(out_x)
+    #     out_y = np.concatenate(out_y)
+    #     out_ytrue = np.concatenate(out_ytrue)
+    #     out_ypred_w1 = np.concatenate(out_ypred_w1)
+    #     out_ypred_w2 = np.concatenate(out_ypred_w2)
+    #     out_ypred_w3 = np.concatenate(out_ypred_w3)
+    #     out_ypred_w4 = np.concatenate(out_ypred_w4)
+    #     out_ypred_w5 = np.concatenate(out_ypred_w5)
+    #     out_ypred_w6 = np.concatenate(out_ypred_w6)
+    #     out_ypred_w7 = np.concatenate(out_ypred_w7)
+    #     out_ypred_w8 = np.concatenate(out_ypred_w8)
+    #     out_ypred_w9 = np.concatenate(out_ypred_w9)
+    #     out_ypred_w10 = np.concatenate(out_ypred_w10)
+    #     out_ypred_w11 = np.concatenate(out_ypred_w11)
+    #     out_ypred_w12 = np.concatenate(out_ypred_w12)
+    #     out_ypred_w13 = np.concatenate(out_ypred_w13)
+    #     out_ypred_w14 = np.concatenate(out_ypred_w14)
+    #     out_ypred_w15 = np.concatenate(out_ypred_w15)
         
-        OutDF['block'] = out_blocks
-        OutDF['cultivar'] = out_cultivars
-        OutDF['x'] = out_x
-        OutDF['y'] = out_y
-        OutDF['ytrue'] = out_ytrue
-        OutDF['ypred_w1'] = out_ypred_w1
-        OutDF['ypred_w2'] = out_ypred_w2
-        OutDF['ypred_w3'] = out_ypred_w3
-        OutDF['ypred_w4'] = out_ypred_w4
-        OutDF['ypred_w5'] = out_ypred_w5
-        OutDF['ypred_w6'] = out_ypred_w6
-        OutDF['ypred_w7'] = out_ypred_w7
-        OutDF['ypred_w8'] = out_ypred_w8
-        OutDF['ypred_w9'] = out_ypred_w9
-        OutDF['ypred_w10'] = out_ypred_w10
-        OutDF['ypred_w11'] = out_ypred_w11
-        OutDF['ypred_w12'] = out_ypred_w12
-        OutDF['ypred_w13'] = out_ypred_w13
-        OutDF['ypred_w14'] = out_ypred_w14
-        OutDF['ypred_w15'] = out_ypred_w15
+    #     OutDF['block'] = out_blocks
+    #     OutDF['cultivar'] = out_cultivars
+    #     OutDF['x'] = out_x
+    #     OutDF['y'] = out_y
+    #     OutDF['ytrue'] = out_ytrue
+    #     OutDF['ypred_w1'] = out_ypred_w1
+    #     OutDF['ypred_w2'] = out_ypred_w2
+    #     OutDF['ypred_w3'] = out_ypred_w3
+    #     OutDF['ypred_w4'] = out_ypred_w4
+    #     OutDF['ypred_w5'] = out_ypred_w5
+    #     OutDF['ypred_w6'] = out_ypred_w6
+    #     OutDF['ypred_w7'] = out_ypred_w7
+    #     OutDF['ypred_w8'] = out_ypred_w8
+    #     OutDF['ypred_w9'] = out_ypred_w9
+    #     OutDF['ypred_w10'] = out_ypred_w10
+    #     OutDF['ypred_w11'] = out_ypred_w11
+    #     OutDF['ypred_w12'] = out_ypred_w12
+    #     OutDF['ypred_w13'] = out_ypred_w13
+    #     OutDF['ypred_w14'] = out_ypred_w14
+    #     OutDF['ypred_w15'] = out_ypred_w15
 
-        # for p in out_ypreds:
-        #     OutDF[p] = out_ypreds[p]
+    #     # for p in out_ypreds:
+    #     #     OutDF[p] = out_ypreds[p]
 
-        return OutDF
-    
-    def xy_vector_generator(self, x0, y0, wsize):
-
-        x_vector, y_vector = [], []
-        
-        for i in range(x0, x0+wsize):
-            for j in range(y0, y0+wsize):
-                x_vector.append(i)
-                y_vector.append(j)
-
-        return x_vector, y_vector 
+    #     return OutDF
     

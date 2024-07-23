@@ -12,13 +12,13 @@ from typing import Union, Dict, List
 # torch.autograd.set_detect_anomaly(True)
 
 import numpy as np
-from model import configs, engine
+# from model import configs, engine
 from model.layers_ours import *
 
 
 
 
-seed = 1987 + engine.get_rank()
+seed = 1987 #+ engine.get_rank()
 torch.manual_seed(seed)
 np.random.seed(seed)
 

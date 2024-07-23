@@ -1,13 +1,12 @@
 import os
 import numpy as np
-from glob import glob
 import pandas as pd
 import torch
 from PyPDF2 import PdfReader
-from model import configs
 import numpy as np
-from model import configs, engine
-seed = 1987 + engine.get_rank()
+
+# from model import configs, engine
+seed = 1987 #+ engine.get_rank()
 torch.manual_seed(seed)
 np.random.seed(seed)
 
@@ -27,7 +26,7 @@ def dataloaders(
     root_data_dir = '/data2/hkaman/Data/'
     root_exp_dir = '/data2/hkaman/Projects/'
 
-    exp_output_dir = root_exp_dir + 'ViT/EXPs/' + 'EXP_' + exp_name
+    exp_output_dir = root_exp_dir + 'ViT/EXPs/July/' + 'EXP_' + exp_name
 
 
     isExist  = os.path.isdir(exp_output_dir)
@@ -37,6 +36,7 @@ def dataloaders(
         os.makedirs(os.path.join(exp_output_dir, 'checkpoints'))
         os.makedirs(os.path.join(exp_output_dir, 'coords'))
         os.makedirs(os.path.join(exp_output_dir, 'loss'))
+        os.makedirs(os.path.join(exp_output_dir, 'attn_scores'))
 
     if data == 's2':
         train_csv = pd.read_csv('/data2/hkaman/Data/Coords/S2/BHO/train.csv', index_col=0)
@@ -45,9 +45,9 @@ def dataloaders(
         valid_csv.to_csv(os.path.join(exp_output_dir + '/coords','val.csv'))
         test_csv  = pd.read_csv('/data2/hkaman/Data/Coords/S2/BHO/test.csv', index_col= 0)
         test_csv.to_csv(os.path.join(exp_output_dir + '/coords','test.csv'))
+
     elif data == 'p':
         train_csv = pd.read_csv('/data2/hkaman/Data/Coords/Planet/BHO/train.csv', index_col=0)
-
         train_csv.to_csv(os.path.join(exp_output_dir + '/coords','train.csv'))
         valid_csv = pd.read_csv('/data2/hkaman/Data/Coords/Planet/BHO/val.csv', index_col= 0)
 
@@ -95,7 +95,7 @@ def dataloaders(
     #=============================================      Data Loader               =================================#
     #==============================================================================================================#                      
     # define training and validation data loaders
-    if resmapling_status: 
+    if resmapling_status is True: 
         train_weights = train_csv['NormWeight'].to_numpy() 
         train_weights = torch.DoubleTensor(train_weights)
         train_sampler = torch.utils.data.sampler.WeightedRandomSampler(
@@ -135,407 +135,7 @@ def dataloaders(
 
     return data_loader_training, data_loader_validate, data_loader_test
 
-class data_generator():
-    def __init__(self, eval_scenario: str, 
-                    spatial_resolution: int, 
-                    patch_size: int, 
-                    patch_offset: int,  
-                    cultivar_list: list, 
-                    year_list: list):
 
-        self.eval_scenario      = eval_scenario
-        self.spatial_resolution = spatial_resolution
-        self.patch_size         = patch_size
-        self.patch_offset       = patch_offset
-        self.cultivar_list      = cultivar_list
-        self.year_list          = year_list
-
-
-        if self.cultivar_list is None: 
-            self.cultivar_list = ['MALVASIA_BIANCA', 'MUSCAT_OF_ALEXANDRIA', 
-                                    'CABERNET_SAUVIGNON','SYMPHONY', 
-                                    'MERLOT', 'CHARDONNAY', 
-                                    'SYRAH', 'RIESLING']
-
-        if self.spatial_resolution == 1: 
-            self.npy_dir = '/data2/hkaman/Livingston/data/1m/'
-
-        else: 
-            self.npy_dir = '/data2/hkaman/Livingston/data/10m/'
-
-        self.images_dir  = os.path.join(self.npy_dir, 'imgs')
-        self.image_names = os.listdir(self.images_dir)
-        self.image_names.sort() 
-
-        self.label_dir   = os.path.join(self.npy_dir, 'labels')
-        self.label_names = os.listdir(self.label_dir)
-        self.label_names.sort() 
-
-
-    def return_split_dataframe(self):
-
-        full_dataframe = self.return_dataframe_patch_info()
-
-
-        if self.eval_scenario == 'pixel_hold_out': 
-            train, valid, test = self.pixel_hold_out(full_dataframe)
-        elif self.eval_scenario == 'year_hold_out':
-            train, valid, test = self.year_hold_out(full_dataframe)
-        elif self.eval_scenario == 'block_hold_out': 
-            train, valid, test = self.block_hold_out(full_dataframe)
-        elif self.eval_scenario == 'block_year_hold_out': 
-            train, valid, test = self.block_year_hold_out(full_dataframe)
-
-        '''print(f"Training Patches: {len(train)}, Validation: {len(valid)} and Test: {len(test)}")
-        print("============================= Train =========================================")
-        _ = print_df_summary(train)
-        print("============================= Validation ====================================")
-        _ = print_df_summary(valid)
-        print("============================= Test ==========================================")
-        _ = print_df_summary(test)
-        print("=============================================================================")'''
-
-        return train, valid, test
-
-
-    def return_dataframe_patch_info(self): 
-
-        df = pd.DataFrame()
-
-        Block, Cultivar, CID, Trellis, TID, RW, SP = [], [], [], [], [], [], []
-        P_means, YEAR, X_COOR, Y_COOR, IMG_P, Label_P  = [], [], [], [], [], []
-        
-        
-        generated_cases = 0
-        removed_cases = 0 
-        
-        
-        for idx, name in enumerate(self.label_names):
-            # Extract Image path
-            image_path = os.path.join(self.images_dir, self.image_names[idx])
-
-            name_split  = os.path.split(name)[-1]
-            block_name  = name_split.replace(name_split[12:], '')
-            root_name   = name_split.replace(name_split[7:], '')
-            year        = name_split.replace(name_split[0:8], '').replace(name_split[12:], '')
-            
-            res           = {key: configs.blocks_information[key] for key in configs.blocks_information.keys() & {root_name}}
-            list_d        = res.get(root_name)
-            block_variety = list_d[0]
-            block_id      = list_d[1]
-            block_rw      = list_d[2]
-            block_sp      = list_d[3]
-            block_trellis = list_d[5]
-            block_tid     = list_d[6]
-
-            label_npy = os.path.join(self.label_dir, name)
-            label = np.load(label_npy, allow_pickle=True)
-            label = label[0,:,:,0]
-            width, height = label.shape[1], label.shape[0]
-            
-            
-            for i in range(0, height - self.patch_size, self.patch_offset):
-                for j in range(0, width - self.patch_size, self.patch_offset):
-                    crop_label = label[i:i+ self.patch_size, j:j+ self.patch_size]
-                    
-                    if np.any((crop_label < 0)):
-                        removed_cases += 1
-                        
-                    elif np.all((crop_label >= 0)): 
-
-                        generated_cases += 1
-                        
-                        patch_mean       = np.mean(crop_label)
-                        P_means.append(patch_mean)
-                    
-                        Block.append(block_name)
-                        CID.append(block_id)
-                        Cultivar.append(block_variety)
-                        Trellis.append(block_trellis)
-                        TID.append(block_tid)
-                        RW.append(int(block_rw))
-                        SP.append(int(block_sp))
-                        YEAR.append(year)
-                        X_COOR.append(i)
-                        Y_COOR.append(j)
-                        IMG_P.append(image_path)
-                        Label_P.append(label_npy)                                        
-
-                        
-        df['block']       = Block
-        df['X']           = X_COOR
-        df['Y']           = Y_COOR
-        df['year']        = YEAR
-        df['cultivar_id'] = CID
-        df['cultivar']    = Cultivar
-        df['trellis']     = Trellis
-        df['trellis_id']  = TID
-        df['row']         = RW
-        df['space']       = SP
-        df['patch_mean']     = P_means
-        df['IMG_PATH']    = IMG_P
-        df['LABEL_PATH']  = Label_P
-        
-        if self.cultivar_list is None:
-            Customized_df = df
-            
-        else: 
-            Customized_df = df[df['cultivar'].isin(self.cultivar_list)]
-            
-        return Customized_df
-
-
-    def year_hold_out(self, df): 
-
-        NewGroupedDf = df.groupby(by=["year"])
-
-        Group1 = NewGroupedDf.get_group(self.year_list[0])
-        Group2 = NewGroupedDf.get_group(self.year_list[1])
-        Group3 = NewGroupedDf.get_group(self.year_list[2])
-        Group4 = NewGroupedDf.get_group(self.year_list[3])
-
-        frames = [Group1, Group2]
-        train = pd.concat(frames)
-        valid = Group3
-        test  = Group4
-
-        return train, valid, test
-    
-    def block_hold_out(self, df):
-        
-        datafram_grouby_year = df.groupby(by = 'year')
-        dataframe_year2017   = datafram_grouby_year.get_group('2017')
-        
-        new_dataframe_basedon_block_mean = pd.DataFrame()
-        block_root_name, cultivar, b_mean = [], [], []
-        
-        dataframe_year2017_groupby_block = dataframe_year2017.groupby(by = 'block')
-
-        for block, blockdf in dataframe_year2017_groupby_block:
-            name_split = os.path.split(block)[-1]
-            root_name  = name_split.replace(name_split[7:], '')
-            block_root_name.append(root_name)
-            
-            cultivar.append(blockdf['cultivar'].iloc[0])
-            b_mean.append(blockdf['patch_mean'].mean())
-            
-        new_dataframe_basedon_block_mean['block'] = block_root_name
-        new_dataframe_basedon_block_mean['cultivar'] = cultivar
-        new_dataframe_basedon_block_mean['block_mean'] = b_mean
-            
-        # split sorted blocks and then split within each cultivar 
-        BlockMeanBased_GroupBy_Cultivar = new_dataframe_basedon_block_mean.groupby(by=["cultivar"]) 
-        training_blocks_names = []
-        validation_blocks_names = []
-        testing_blocks_names = []
-        
-        for cul, frame in BlockMeanBased_GroupBy_Cultivar: 
-            n_blocks = len(frame.loc[frame['cultivar'] == cul])
-            
-            if n_blocks <= 1: 
-                name_2016  = frame['block'].iloc[0] + '_2016'
-                name_2017  = frame['block'].iloc[0] + '_2017'
-                name_2018  = frame['block'].iloc[0] + '_2018'
-                name_2019  = frame['block'].iloc[0] + '_2019'
-                training_blocks_names.extend((name_2016, name_2017, name_2018, name_2019))
-                
-            elif n_blocks == 2:
-                name_2016_0  = frame['block'].iloc[0] + '_2016'
-                name_2017_0  = frame['block'].iloc[0] + '_2017'
-                name_2018_0  = frame['block'].iloc[0] + '_2018'
-                name_2019_0  = frame['block'].iloc[0] + '_2019'
-                
-                training_blocks_names.extend((name_2016_0, name_2017_0, name_2018_0, name_2019_0))
-                
-                name_2016_1  = frame['block'].iloc[1] + '_2016'
-                name_2017_1  = frame['block'].iloc[1] + '_2017'
-                name_2018_1  = frame['block'].iloc[1] + '_2018'
-                name_2019_1  = frame['block'].iloc[1] + '_2019'
-                
-                validation_blocks_names.extend((name_2016_1, name_2017_1, name_2018_1, name_2019_1))
-                
-            elif n_blocks == 3:
-                name_2016_0  = frame['block'].iloc[0] + '_2016'
-                name_2017_0  = frame['block'].iloc[0] + '_2017'
-                name_2018_0  = frame['block'].iloc[0] + '_2018'
-                name_2019_0  = frame['block'].iloc[0] + '_2019'
-                
-                training_blocks_names.extend((name_2016_0, name_2017_0, name_2018_0, name_2019_0))
-                
-                name_2016_1  = frame['block'].iloc[2] + '_2016'
-                name_2017_1  = frame['block'].iloc[2] + '_2017'
-                name_2018_1  = frame['block'].iloc[2] + '_2018'
-                name_2019_1  = frame['block'].iloc[2] + '_2019'
-                
-                testing_blocks_names.extend((name_2016_1, name_2017_1, name_2018_1, name_2019_1))  
-                
-                name_2016_2  = frame['block'].iloc[1] + '_2016'
-                name_2017_2  = frame['block'].iloc[1] + '_2017'
-                name_2018_2  = frame['block'].iloc[1] + '_2018'
-                name_2019_2  = frame['block'].iloc[1] + '_2019'
-                
-                validation_blocks_names.extend((name_2016_2, name_2017_2, name_2018_2, name_2019_2)) 
-                
-            elif n_blocks > 3:
-                blocks_2017      = frame['block']
-                blocks_mean_2017 = frame['block_mean']
-
-                # List of tuples with blocks and mean yield
-                block_mean_yield_2017 = [(blocks, mean) for blocks, 
-                                    mean in zip(blocks_2017, blocks_mean_2017)]
-
-                block_mean_yield_2017 = sorted(block_mean_yield_2017, key = lambda x: x[1], reverse = True)
- 
-
-                te  = 1
-                val = 2
-                for i in range(len(block_mean_yield_2017)):
-                    name_2016  = block_mean_yield_2017[i][0] + '_2016'
-                    name_2017  = block_mean_yield_2017[i][0] + '_2017'
-                    name_2018  = block_mean_yield_2017[i][0] + '_2018'
-                    name_2019  = block_mean_yield_2017[i][0] + '_2019'
-
-                    if i == te: 
-                        testing_blocks_names.append(name_2016)
-                        testing_blocks_names.append(name_2017)
-                        testing_blocks_names.append(name_2018)
-                        testing_blocks_names.append(name_2019)
-                        te = te + 3
-                    elif i == val: 
-                        validation_blocks_names.append(name_2016)
-                        validation_blocks_names.append(name_2017)
-                        validation_blocks_names.append(name_2018)
-                        validation_blocks_names.append(name_2019)
-
-                        val = val + 3
-                    else:
-                        training_blocks_names.append(name_2016)
-                        training_blocks_names.append(name_2017)
-                        training_blocks_names.append(name_2018)
-                        training_blocks_names.append(name_2019)
-
-        train = df[df['block'].isin(training_blocks_names)]
-        valid = df[df['block'].isin(validation_blocks_names)]
-        test  = df[df['block'].isin(testing_blocks_names)] 
-
-
-        return train, valid, test
-
-    def block_year_hold_out(self, df):
-        
-        datafram_grouby_year = df.groupby(by = 'year')
-        dataframe_year2017   = datafram_grouby_year.get_group('2017')
-        
-        new_dataframe_basedon_block_mean = pd.DataFrame()
-        block_root_name, cultivar, b_mean = [], [], []
-        
-        dataframe_year2017_groupby_block = dataframe_year2017.groupby(by = 'block')
-
-        for block, blockdf in dataframe_year2017_groupby_block:
-            name_split = os.path.split(block)[-1]
-            root_name  = name_split.replace(name_split[7:], '')
-            block_root_name.append(root_name)
-            
-            cultivar.append(blockdf['cultivar'].iloc[0])
-            b_mean.append(blockdf['patch_mean'].mean())
-            
-        new_dataframe_basedon_block_mean['block']      = block_root_name
-        new_dataframe_basedon_block_mean['cultivar']   = cultivar
-        new_dataframe_basedon_block_mean['block_mean'] = b_mean
-        
-        # split sorted blocks and then split within each cultivar 
-        BlockMeanBased_GroupBy_Cultivar = new_dataframe_basedon_block_mean.groupby(by=["cultivar"]) 
-
-        training_blocks_names = []
-        validation_blocks_names = []
-        testing_blocks_names = []
-        
-        for cul, frame in BlockMeanBased_GroupBy_Cultivar: 
-
-            n_blocks = len(frame.loc[frame['cultivar'] == cul])
-            
-            if frame.shape[0] == 3:
-                
-
-                name_0  = frame['block'].iloc[0] + '_' + self.year_list[0]
-                name_1  = frame['block'].iloc[0] + '_' + self.year_list[1]
-                training_blocks_names.append(name_0)
-                training_blocks_names.append(name_1)
-                
-                name_2  = frame['block'].iloc[1] + '_' + self.year_list[2]
-                validation_blocks_names.append(name_2) 
-
-                name_3  = frame['block'].iloc[2] + '_' + self.year_list[3]
-                testing_blocks_names.append(name_3) 
-
-
-                
-            elif frame.shape[0] > 3:
-
-                blocks_2017      = frame['block']
-                blocks_mean_2017 = frame['block_mean']
-
-                # List of tuples with blocks and mean yield
-                block_mean_yield_2017 = [(blocks, mean) for blocks, 
-                                    mean in zip(blocks_2017, blocks_mean_2017)]
-
-                block_mean_yield_2017 = sorted(block_mean_yield_2017, key = lambda x: x[1], reverse = True)
-                #print(block_mean_yield_2017)
-                #print("============================")
-
-                te  = 1
-                val = 2
-                for i in range(len(block_mean_yield_2017)):
-
-                    if i == te: 
-                        name_3  = block_mean_yield_2017[i][0] + '_' + self.year_list[3]
-                        testing_blocks_names.append(name_3)
-                        te = te + 3
-                        #print(f"{cul}: {name_3}")
-                    elif i == val: 
-                        name_2  = block_mean_yield_2017[i][0] + '_' + self.year_list[2]
-                        validation_blocks_names.append(name_2)
-                        val = val + 3
-                        #print(f"{cul}: {name_2}")
-                    else:
-                        name_0  = block_mean_yield_2017[i][0] + '_' + self.year_list[0]
-                        name_1  = block_mean_yield_2017[i][0] + '_' + self.year_list[1]
-                        #print(f"{cul}: {name_0, name_1}")
-                        training_blocks_names.append(name_0)
-                        training_blocks_names.append(name_1)
-                    #print(f"with MORE than 3: {name_0, name_1, name_2, name_3}")
-
-        #print(validation_blocks_names)
-        train = df[df['block'].isin(training_blocks_names)]
-        valid = df[df['block'].isin(validation_blocks_names)]
-        test  = df[df['block'].isin(testing_blocks_names)] 
-
-
-        return train, valid, test
-
-
-    def return_pixelwise_weight_dw(self, dw_alpha):
-
-        masks = None
-        for idx, row in self.NewDf.iterrows():
-            xcoord     = row['X'] 
-            ycoord     = row['Y'] 
-            label_path = row['LABEL_PATH'] 
-            mask  = self.crop_gen(label_path, xcoord, ycoord) 
-            mask  = np.swapaxes(mask, -1, 0)
-
-            if masks is None: 
-                masks = mask
-            else: 
-                masks = np.concatenate([masks, mask], axis = 0)
-
-        reshaped_masks = np.reshape(masks, (masks.shape[0]*masks.shape[1]*masks.shape[2]))
-
-        #weights = TargetRelevance(reshaped_masks, alpha = dw_alpha).get_relevance()
-        weights = TargetRelevance(reshaped_masks, alpha = dw_alpha).__call__(reshaped_masks)
-
-        weights = np.reshape(weights, (masks.shape[0], masks.shape[1], masks.shape[2]))
-        return weights  
     
 class dataloader_RGB(object):
     def __init__(self, npy_dir, csv_dir, 
@@ -558,10 +158,14 @@ class dataloader_RGB(object):
         elif category  == 'test': 
             self.NewDf = pd.read_csv(os.path.join(self.csv_dir, 'coords') +'/test.csv', index_col=0)
             self.NewDf.reset_index(inplace = True, drop = True)
-        
-        self.images = sorted(glob(os.path.join(self.npy_dir , 'new_imgs') +'/*.npy'))
-        self.labels = sorted(glob(os.path.join(self.npy_dir , 'new_labels') +'/*.npy'))
 
+        self.weights = self.return_pixelwise_weight_dw(3.9)
+        assert not np.isnan(self.weights).any()
+        self.weights = np.where(self.weights >= 1, self.weights, 1)
+
+
+        
+        self.NewDf = self.NewDf[:2000]
         self.stats_dict = np.load('/data2/hkaman/Data/Coords/met_stats.npz', allow_pickle=True)
         self.stats_dict = self.stats_dict['arr_0'].item() 
 
@@ -576,56 +180,92 @@ class dataloader_RGB(object):
         sp_id = self.NewDf.loc[idx]['space']
         t_id = self.NewDf.loc[idx]['trellis_id']
 
-        # IMAGE
-        S2_path = self.NewDf.loc[idx]['IMG_PATH']
-        S2 = self.crop_gen(S2_path, xcoord, ycoord) 
-        S2 = np.swapaxes(S2, -1, 0)    
-        S2 = S2 / 255.
+        if self.in_channels == 4:
+            # only Sentinel 1 and time encoding
+            WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
+            block_means = self.add_input_within_bc_mean(WithinBlockMean)
+            block_timeseries_encode = self._time_series_encoding(block_id)
+            S1_path = self.NewDf.loc[idx]['S1_PATH']
+            S1 = self._crop_gen(S1_path, xcoord, ycoord) 
+            S1 = np.swapaxes(S1, -1, 0)
+            image = np.concatenate([S1, block_timeseries_encode, block_means], axis = 0)
+
         
+        elif self.in_channels == 6:
+            # only Sentinel-2 and time encoding
 
-        WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
-        block_means = self.add_input_within_bc_mean(WithinBlockMean)
-        block_timeseries_encode = self.time_series_encoding(block_id)
+            S2_path = self.NewDf.loc[idx]['IMG_PATH']
+            S2 = self._crop_gen(S2_path, xcoord, ycoord) 
+            S2 = np.swapaxes(S2, -1, 0)    
+            S2 = S2 / 255.
 
-        S1_path = self.NewDf.loc[idx]['S1_PATH']
-        S1 = self.crop_gen(S1_path, xcoord, ycoord) 
-        S1 = np.swapaxes(S1, -1, 0)
+            WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
+            block_means = self.add_input_within_bc_mean(WithinBlockMean)
+            block_timeseries_encode = self._time_series_encoding(block_id)
+            image = np.concatenate([S2, block_timeseries_encode, block_means], axis = 0)
 
-        image = np.concatenate([S2, S1, block_means, block_timeseries_encode], axis = 0)
+
+        elif self.in_channels ==8:
+            # Sentinel-1 and -2 and time encoding
+            S2_path = self.NewDf.loc[idx]['IMG_PATH']
+            S2 = self._crop_gen(S2_path, xcoord, ycoord) 
+            S2 = np.swapaxes(S2, -1, 0)   
+            S2 = S2 / 255.
+
+            block_timeseries_encode = self._time_series_encoding(block_id)
+            WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
+            block_means = self.add_input_within_bc_mean(WithinBlockMean)
+
+            S1_path = self.NewDf.loc[idx]['S1_PATH']
+            S1 = self._crop_gen(S1_path, xcoord, ycoord) 
+            S1 = np.swapaxes(S1, -1, 0)
+
+            image = np.concatenate([S2, S1, block_timeseries_encode, block_means], axis = 0)
+
         image = torch.as_tensor(image, dtype=torch.float32)
         image[torch.isnan(image)] = 0
 
         # MASK 
         label_path = self.NewDf.loc[idx]['LABEL_PATH']
-        mask = self.crop_gen(label_path, xcoord, ycoord) 
+        mask = self._crop_gen(label_path, xcoord, ycoord) 
         mask = np.swapaxes(mask, -1, 0)
         mask = torch.as_tensor(mask, dtype=torch.float32)
 
         # YIELDZONE: 
-        yz = self.return_yield_zone_9_classes(mask)
+        yz = self._YieldZoneMap(mask, num_classes= 9)
         yz = torch.as_tensor(yz, dtype=torch.float32)
 
-        # # Management information as a tensor
-        # EmbTensor = torch.as_tensor((cultivar_id, t_id, rw_id, sp_id), dtype=torch.int64)
-        #f"The {cultivar} has a trellis id {t_id}, row space {rw_id} and canopy space {sp_id}."
-        # TEXT
+        # Text
         text_path = self.NewDf.loc[idx]['TEXT_PATH']
-        EmbText = self.load_text_file(text_path)
+        EmbText = self._load_text_file(text_path)
 
         # Meteorological data
         met_path = self.NewDf.loc[idx]['MET_PATH']
         met = np.load(met_path)
-        met = self.met_normalizer(met[..., 0], method= 'z-score')
+        met = self._met_normalizer(met[..., 0], method= 'z-score')
+
+        # Weights
+        weight_mtx = self.weights[idx, :, :]
+        weight_mtx = np.expand_dims(weight_mtx, axis = 0)
+        weight_mtx = torch.as_tensor(weight_mtx, dtype=torch.float32)
         
-        sample = {"image": image, "mask": mask, "met": met, "block": block_id, "cultivar": cultivar, 
-                "X": xcoord, "Y": ycoord, "EmbList": [cultivar_id, t_id, rw_id, sp_id], "EmbText": EmbText, "YZ": yz} 
+        sample = {"image": image, 
+                  "mask": mask, 
+                  "met": met, 
+                  "block": block_id, 
+                  "cultivar": cultivar, 
+                  "X": xcoord, "Y": ycoord, 
+                  "EmbList": [cultivar_id, t_id, rw_id, sp_id], 
+                  "EmbText": EmbText, 
+                  "YZ": yz, 
+                  "weight": weight_mtx,} 
             
         return sample
 
     def __len__(self):
         return len(self.NewDf)
     
-    def load_text_file(self, file_path):
+    def _load_text_file(self, file_path):
         # Extract the file extension to determine how to process it
         _, file_extension = os.path.splitext(file_path)
         
@@ -649,7 +289,7 @@ class dataloader_RGB(object):
             # Unsupported file type
             raise ValueError("Unsupported file format: " + file_extension)
     
-    def met_normalizer(self, arr, method='z-score'):
+    def _met_normalizer(self, arr, method='z-score'):
         """
         Normalize the meteorological dataset using either min-max normalization or z-score normalization.
 
@@ -698,6 +338,49 @@ class dataloader_RGB(object):
 
         return segmented
     
+    def _YieldZoneMap(self, mask, num_classes: int):
+        # Initialize an empty array with the same shape as the image for the segmented output
+        segmented = np.zeros_like(mask)
+        # min_point = 8
+        # max_point = 22
+        
+        if num_classes == 3: 
+            # Initialize an empty array with the same shape as the image for the segmented output
+            segmented = np.zeros_like(mask)
+            # Class 1: Pixel values <= 9
+            segmented[mask < EXTREME_LOWER_THRESHOLD] = 1
+            # Class 2: Pixel values > 9 and < 22
+            segmented[(mask >= EXTREME_LOWER_THRESHOLD) & (mask < EXTREME_UPPER_THRESHOLD)] = 2
+            # Class 3: Pixel values >= 22
+            segmented[mask >= EXTREME_UPPER_THRESHOLD] = 3
+
+        elif num_classes == 9:
+            # Values < 8: Class 1
+            segmented[mask < 8] = 1
+            
+            # Values between 8 and 22: Classes 2 to 8 (7 intervals of 2)
+            for i, val in enumerate(range(EXTREME_LOWER_THRESHOLD, EXTREME_UPPER_THRESHOLD, 2), start=2):
+                lower_bound = val
+                upper_bound = val + 2
+                segmented[(mask >= lower_bound) & (mask < upper_bound)] = i
+            
+            # Values > 22 and < 30: Last class (9)
+            segmented[(mask > EXTREME_UPPER_THRESHOLD) & (mask < 30)] = 9
+    
+            # Value == 30: Also last class (9)
+            segmented[mask == 30] = 9
+
+        elif num_classes == 15:
+            for i in range(15):
+                lower_bound = i * 2
+                upper_bound = (i + 1) * 2
+                segmented[(mask >= lower_bound) & (mask < upper_bound)] = i + 1
+            
+            # Special case for the upper boundary of the last class to include the value 30
+            segmented[mask == 30] = 15
+
+        return segmented
+    
     def return_yield_zone_9_classes(self, mask):
         # Initialize an empty array with the same shape as the image for the segmented output
         segmented = np.zeros_like(mask)
@@ -718,8 +401,30 @@ class dataloader_RGB(object):
         segmented[mask == 30] = 9
 
         return segmented
+    
+    def return_pixelwise_weight_dw(self, dw_alpha):
 
-    def crop_gen(self, src, xcoord, ycoord):
+        masks = None
+        for idx, row in self.NewDf.iterrows():
+            xcoord     = row['X'] 
+            ycoord     = row['Y'] 
+            label_path = row['LABEL_PATH'] 
+            mask  = self._crop_gen(label_path, xcoord, ycoord) 
+            mask  = np.swapaxes(mask, -1, 0)
+
+            if masks is None: 
+                masks = mask
+            else: 
+                masks = np.concatenate([masks, mask], axis = 0)
+
+        reshaped_masks = np.reshape(masks, (masks.shape[0]*masks.shape[1]*masks.shape[2]))
+
+        weights = TargetRelevance(reshaped_masks, alpha = dw_alpha).__call__(reshaped_masks)
+
+        weights = np.reshape(weights, (masks.shape[0], masks.shape[1], masks.shape[2]))
+        return weights  
+    
+    def _crop_gen(self, src, xcoord, ycoord):
         src = np.load(src, allow_pickle=True)
         if src.ndim == 2:
             src = np.expand_dims(src, axis = 0)
@@ -731,7 +436,7 @@ class dataloader_RGB(object):
         fill_matrix_bmean = np.full((1, self.wsize, self.wsize, 15), bloks_mean) 
         return fill_matrix_bmean
     
-    def time_series_encoding(self, block_id):
+    def _time_series_encoding(self, block_id):
         timeseries = None
 
         name_split = os.path.split(str(block_id))[-1]
@@ -755,4 +460,149 @@ class dataloader_RGB(object):
                 timeseries   = np.concatenate([timeseries, this_week_matrix], axis = -1)
 
         return timeseries  
-    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+from KDEpy import FFTKDE
+from sklearn.preprocessing import MinMaxScaler
+
+def bisection(array, value):
+    '''Given an ``array`` , and given a ``value`` , returns an index j such that ``value`` is between array[j]
+    and array[j+1]. ``array`` must be monotonic increasing. j=-1 or j=len(array) is returned
+    to indicate that ``value`` is out of range below and above respectively.
+    From https://stackoverflow.com/a/41856629'''
+    n = len(array)
+    if (value < array[0]):
+        return -1
+    elif (value > array[n-1]):
+        return n
+    jl = 0# Initialize lower
+    ju = n-1# and upper limits.
+    while (ju-jl > 1):# If we are not yet done,
+        jm=(ju+jl) >> 1# compute a midpoint with a bitshift
+        if (value >= array[jm]):
+            jl=jm# and replace either the lower limit
+        else:
+            ju=jm# or the upper limit, as appropriate.
+        # Repeat until the test condition is satisfied.
+    if (value == array[0]):# edge cases at bottom
+        return 0
+    elif (value == array[n-1]):# and top
+        return n-1
+    else:
+        return jl
+
+class TargetRelevance():
+
+    def __init__(self, y, alpha=1.0):
+        self.alpha = alpha
+       #print('TargetRelevance alpha:', self.alpha)
+
+        silverman_bandwidth = 1.06*np.std(y)*np.power(len(y), (-1.0/5.0))
+
+        #print('Using Silverman Bandwidth', silverman_bandwidth)
+        best_bandwidth = silverman_bandwidth
+
+        self.kernel = FFTKDE(bw=best_bandwidth).fit(y, weights=None)
+
+        x, y_dens_grid = self.kernel.evaluate(1024)  # Default precision is 1024
+        self.x = x
+        
+        # Min-Max Scale to 0-1 since pdf's can actually exceed 1
+        # See: https://stats.stackexchange.com/questions/5819/kernel-density-estimate-takes-values-larger-than-1
+        self.y_dens_grid = MinMaxScaler().fit_transform(y_dens_grid.reshape(-1, 1)).flatten()
+
+        self.y_dens = np.vectorize(self.get_density)(y)
+
+        self.eps = 1e-6
+        w_star = np.maximum(1 - self.alpha * self.y_dens, self.eps)
+        self.mean_w_star = np.mean(w_star)
+        self.relevances = w_star / self.mean_w_star
+
+    def get_density(self, y):
+        idx = bisection(self.x, y)
+        try:
+            dens = self.y_dens_grid[idx]
+        except IndexError:
+            if idx <= -1:
+                idx = 0
+            elif idx >= len(self.x):
+                idx = len(self.x) - 1
+            dens = self.y_dens_grid[idx]
+        return dens
+
+    #@functools.lru_cache(maxsize=100000)
+    def eval_single(self, y):
+        dens = self.get_density(y)
+        return np.maximum(1 - self.alpha * dens, self.eps) / self.mean_w_star
+
+    def eval(self, y):
+        ys = y.flatten().tolist()
+        rels = np.array(list(map(self.eval_single, ys)))[:, None]
+        return rels
+
+    def __call__(self, y):
+        return self.eval(y)

@@ -110,9 +110,6 @@ class MoranCalculator(_Loss):
 
         return loss
 
-
-
-
 def calculate_morans_i(inputs, targets, w):
 
     mi_prediction = Moran(inputs.reshape(-1), w)
@@ -135,7 +132,6 @@ def mse_morans_i_loss(inputs, targets):
     loss = mse + torch.tensor(morans_i_loss, dtype=torch.float32)
 
     return loss
-
 
 def mse_loss(inputs, targets):
     loss = (inputs - targets) ** 2

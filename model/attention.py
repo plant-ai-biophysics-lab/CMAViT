@@ -5,15 +5,15 @@ import torch.nn.functional as F
 from torch import nn, einsum
 from einops import rearrange, repeat
 from torch.nn.modules.utils import _pair
-from transformers import DistilBertTokenizerFast, DistilBertModel
 import tiktoken
 import os 
-from typing import Dict, List, NamedTuple, Optional, Tuple, Union, cast, overload
-from jaxtyping import Float, Int
+from typing import Dict, Union
+from torch.nn.functional import interpolate
+
 
 import numpy as np
-from model import configs, engine
-seed = 1987 + engine.get_rank()
+# from model import configs, engine
+seed = 1987 
 torch.manual_seed(seed)
 np.random.seed(seed)
 
@@ -22,6 +22,44 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+
+class DoubleConv(nn.Module):
+    """(convolution => [BN] => ReLU) * 2"""
+    def __init__(self, in_channels, out_channels):
+        super(DoubleConv, self).__init__()
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.double_conv(x)
+
+class UNet(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(UNet, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+        self.conv1 = DoubleConv(in_channels, 64)
+        self.conv2 = DoubleConv(64, 128)
+        self.conv3 = DoubleConv(128, 256)
+        self.conv4 = DoubleConv(256, 128)
+        self.conv5 = DoubleConv(128, 64)
+        self.conv6 = nn.Conv2d(64, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        x1 = self.conv1(x)
+        x2 = self.conv2(interpolate(x1, scale_factor=0.5, mode='bilinear', align_corners=True))
+        x3 = self.conv3(interpolate(x2, scale_factor=0.5, mode='bilinear', align_corners=True))
+        x4 = self.conv4(interpolate(x3, scale_factor=2, mode='bilinear', align_corners=True))
+        x5 = self.conv5(interpolate(x4, scale_factor=2, mode='bilinear', align_corners=True))
+        out = self.conv6(x5)
+        return out
 
 
 def exists(val):
@@ -87,11 +125,10 @@ class MultiRegressionHead(nn.Module):
         super().__init__()
         self.config = config
 
-        if self.config.mask_modality != 'text':
+        if self.config.mask_modality != 'text': #
             n = 2
         else:
             n = 1
-
 
         self.regression = nn.ModuleDict(dict(
                 norm =nn.LayerNorm(self.config.embed_dim*n), 
@@ -114,10 +151,13 @@ class MultiRegressionHead(nn.Module):
 
             out.append(x)
 
-        return out, x_list
-    
+        return out
+
+
+
 def default(val, d):
     return val if val is not None else d
+
 
 class FeedForward(nn.Module):
     def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.):
@@ -185,8 +225,9 @@ class TextEmbed(nn.Module):
 
     def forward(self, texts):
         encoded_texts = [self.TextEncoder.encode(text) for text in texts]
-        max_length = max(len(text) for text in encoded_texts)
-        padded_texts = [text + [0] * (max_length - len(text)) for text in encoded_texts]
+        max_length    = 249 #max(len(text) for text in encoded_texts)
+        # padded_texts = [text + [0] * (max_length - len(text)) for text in encoded_texts]
+        padded_texts = [text[:max_length] + [0] * (max_length - len(text)) for text in encoded_texts]
         texts_tensor = torch.tensor(padded_texts, dtype=torch.float32).to(self.device)
         texts_tensor = torch.unsqueeze(texts_tensor, dim=-1)
         
@@ -197,10 +238,10 @@ class TextEmbed(nn.Module):
         texts_tensor = torch.cat((cls_tokens, texts_tensor), dim=1)
 
         embeddings = self.dropout(texts_tensor)
+
+
         return embeddings
 
-
-    
 class TextAttention(nn.Module):
     def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
         super().__init__()
@@ -347,12 +388,10 @@ class AccImgEmbed(nn.Module):
         self.dropout = nn.Dropout(config.proj_dropout)
 
     def forward(self, x):
-        B = x.shape[0]
+        B, T = x.shape[0], x.shape[-1]
         cls_tokens = self.cls_token.expand(B, -1, -1)  # Expand CLS tokens once
-
         # Rearrange to put time dimension next to batch
         x = rearrange(x, 'b c w h t -> (b t) c w h')
-
         # Apply convolution and adjust dimensions
         x = self.proj(x)  # Convolution output
         x = x.flatten(2).transpose(1, 2)  # Prepare for concatenation

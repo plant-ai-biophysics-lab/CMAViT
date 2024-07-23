@@ -7,14 +7,14 @@ from ml_collections import ConfigDict
 from typing import Dict, Union
 torch.autograd.set_detect_anomaly(True)
 
-from model import configs, engine
+# from model import configs, engine
 from model.attn_lrp import TextEmbed, AccMetEmbed, AccImgEmbed, MultiRegressionHead
 from model.attn_lrp import TextEncoder, SpatialMetEncoder, MultiModalEncoder
 from model.layers_ours import *
 
 
 
-seed = 1987 + engine.get_rank()
+seed = 1987 #+ engine.get_rank()
 torch.manual_seed(seed)
 np.random.seed(seed)
 device = "cuda" if torch.cuda.is_available() else "cpu"
