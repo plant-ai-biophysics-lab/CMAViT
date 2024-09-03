@@ -10,10 +10,9 @@ from multiprocessing import Pool, cpu_count
 device = "cuda" if torch.cuda.is_available() else "cpu"
 import os 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-from model import configs
+from models import configs
 from src import losses
-
-from model.mmst import MMST_ViT
+from models.mmst import MMST_ViT
 
 
 #======================================================================================================================================#
@@ -31,9 +30,15 @@ from model.mmst import MMST_ViT
 #         return 0
 #     return dist.get_rank()
 
-seed = 1987 #+ get_rank()
-torch.manual_seed(seed)
+import numpy as np
+import random
+seed = 1987
+random.seed(seed)
 np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 class EarlyStopping():
     def __init__(self, tolerance=30, min_delta=0):
@@ -53,8 +58,6 @@ class EarlyStopping():
         print(f"count: {self.counter}")
         if self.counter >= self.tolerance:  
                 self.early_stop = True
-
-
 
 class ViTYieldEst:
     """
@@ -92,7 +95,7 @@ class ViTYieldEst:
         self.exp = exp
 
         params = [p for p in self.model.parameters() if p.requires_grad]
-        self.optimizer = torch.optim.Adam(params, lr=self.lr, weight_decay=self.wd)
+        self.optimizer = torch.optim.AdamW(params, lr=self.lr, weight_decay=self.wd)
 
         self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/July/' + 'EXP_' + self.exp
 
@@ -108,7 +111,11 @@ class ViTYieldEst:
         self.timeseries_fig = os.path.join(self.exp_output_dir, self.exp + '_timeseries.png')
         self.scatterplot = os.path.join(self.exp_output_dir, self.exp + '_scatterplot.png')
 
-    def train(self, data_loader_training, data_loader_validate, loss: str, epochs: int, loss_stop_tolerance: int):
+    def train(self, data_loader_training, data_loader_validate, 
+              loss: str, 
+              epochs: int, 
+              loss_stop_tolerance: int, 
+              cond: str):
         """
         Trains the model using the provided training and validation data loaders.
 
@@ -137,10 +144,18 @@ class ViTYieldEst:
                 mettrain = sample['met'].to(device)
                 ytrain_true = sample['mask'][:,:,:,:,0].to(device)
                 embtext_train = sample['EmbText']
-                yieldzone_train = sample['YZ'].to(device)
                 train_weights = sample['weight'].to(device)
 
-                list_ytrain_pred, _ = self.model(xtrain, embtext_train, mettrain, yieldzone_train) 
+                if cond is True:
+                    yieldzone_train = sample['YZ'].to(device)
+                else:
+                    yieldzone_train = None
+
+                list_ytrain_pred = self.model(img = xtrain, 
+                                                 context = embtext_train, 
+                                                 met = mettrain, 
+                                                 yz = yieldzone_train, 
+                                                 cond = cond) 
 
                 self.optimizer.zero_grad()
 
@@ -161,10 +176,20 @@ class ViTYieldEst:
                     metvalid = sample['met'].to(device)
                     yvalid_true = sample['mask'][:,:,:,:,0].to(device)
                     embtext_valid = sample['EmbText']
-                    yieldzone_valid = sample['YZ'].to(device)
                     valid_weights = sample['weight'].to(device)
 
-                    list_yvalid_pred, _ = self.model(xvalid, embtext_valid, metvalid, yieldzone_valid)   
+                    if cond is True:
+                        yieldzone_valid = sample['YZ'].to(device)
+                    else:
+                        yieldzone_valid = None
+
+
+                    list_yvalid_pred = self.model(img = xvalid, 
+                                                     context = embtext_valid, 
+                                                     met = metvalid, 
+                                                     yz = yieldzone_valid, 
+                                                     cond = cond)   
+                    
                     valid_loss = self._calculate_timeseries_loss(yvalid_true, list_yvalid_pred, loss, valid_weights)
 
                     val_epoch_loss += valid_loss.item()
@@ -207,10 +232,9 @@ class ViTYieldEst:
 
         self._save_loss_df(loss_stats, self.loss_df_name, self.loss_fig_name)
 
-    def predict(self, config, data_loader, category: str, iter: int):
+    def predict(self, model, data_loader, category: str, iter: int):
 
-        print(f"*************** Eval Process: No YZ Strategy! **************")
-        model = MMST_ViT(config, cond = False).to(device)
+        # model = MMST_ViT(config, cond = False).to(device)
         model.load_state_dict(torch.load(self.best_model_name))
         output_files =[]
         attn_outs =  None
@@ -225,14 +249,18 @@ class ViTYieldEst:
                     block_x_coords = sample['X']
                     block_y_coords = sample['Y']
                     embmatrix = sample['EmbText']
-                    yieldzone = sample['YZ'].to(device)
-                
-                    pred_list, text_attn_list = self.model(x, embmatrix, met, yieldzone)
+                    # yieldzone = sample['YZ'].to(device)
+            
+                    pred_list = self.model(img = x, 
+                                            context = embmatrix, 
+                                            met = met, 
+                                            yz = None, 
+                                            cond = False)
 
-                    if category == 'train':
-                        np.save(os.path.join(self.exp_output_dir, f'attn_scores/train_attn_scores_{batch}.npy'), text_attn_list[0].detach().cpu().numpy())
+                    # if category == 'train':
+                    #     np.save(os.path.join(self.exp_output_dir, f'attn_scores/train_attn_scores_{batch}.npy'), text_attn_list[0].detach().cpu().numpy())
 
-                        # np.save(f'/data2/hkaman/Projects/ViT/EXPs/July/attnscores/train_attn_scores_{batch}.npy', text_attn_list[0].detach().cpu().numpy())
+                    #     # np.save(f'/data2/hkaman/Projects/ViT/EXPs/July/attnscores/train_attn_scores_{batch}.npy', text_attn_list[0].detach().cpu().numpy())
 
 
                     this_batch = {"block": block_id, 

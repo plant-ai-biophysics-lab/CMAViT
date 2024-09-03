@@ -15,6 +15,37 @@ EXTREME_UPPER_THRESHOLD = 22 #54.36
 HECTARE_TO_ACRE_SCALE = 2.471 # 2.2417
 
 
+def cost_sensitive_weight_sampler(df):
+    
+    Groups = df.groupby(by=["cultivar"])
+    bins = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
+    
+    dict_ = {}
+    for state, frame in Groups:        
+        count_list = frame['patch_mean'].value_counts(bins=bins, sort=False)
+        count_sum = np.sum(count_list)
+        dict_[state[0]] = count_list, count_sum
+
+    weight = []#np.zeros((len(df))) 
+    
+    for idx, row in df.iterrows():  
+        patch_cultivar = row['cultivar']
+        patch_mean = row['patch_mean']     
+
+        get_patch_count = dict_[patch_cultivar][0][patch_mean]
+        get_cultivar_sum = dict_[patch_cultivar][1]
+        row_weight = get_patch_count / get_cultivar_sum
+        row_weight = 1 / (get_patch_count / get_patch_count) if get_patch_count != 0 else 0
+        weight.append(row_weight)
+        
+    weight = np.array(weight)
+    df['weight'] = weight
+    list_sum = df.groupby(by=["cultivar"])['weight'].transform('sum')
+    NormWeights = df['weight']/list_sum
+    # df['NWeight'] = NormWeights
+    
+    return NormWeights
+
 def dataloaders(
         batch_size:int, 
         img_size: int,
@@ -96,34 +127,38 @@ def dataloaders(
     #==============================================================================================================#                      
     # define training and validation data loaders
     if resmapling_status is True: 
-        train_weights = train_csv['NormWeight'].to_numpy() 
+
+        if resmapling_status: 
+            print(f"resampling is {resmapling_status}, The dataloader is processing cost-sensitive resampling!")
+
+        train_weights = cost_sensitive_weight_sampler(train_csv)#train_csv['NormWeight'].to_numpy() 
         train_weights = torch.DoubleTensor(train_weights)
         train_sampler = torch.utils.data.sampler.WeightedRandomSampler(
         train_weights, 
         len(train_weights), 
         replacement=True)    
 
-        val_weights   = valid_csv['NormWeight'].to_numpy() 
+        val_weights   = cost_sensitive_weight_sampler(valid_csv) #valid_csv['NormWeight'].to_numpy() 
         val_weights   = torch.DoubleTensor(val_weights)
         val_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
         val_weights, 
         len(val_weights), 
         replacement=True)    
     
-        test_weights   = test_csv['NormWeight'].to_numpy() 
-        test_weights   = torch.DoubleTensor(test_weights)
-        test_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
-        test_weights, 
-        len(test_weights), 
-        replacement=True)  
+        # test_weights   = test_csv['NormWeight'].to_numpy() 
+        # test_weights   = torch.DoubleTensor(test_weights)
+        # test_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
+        # test_weights, 
+        # len(test_weights), 
+        # replacement=True)  
     
-        print(f"resampling is calculating!")
+
         data_loader_training = torch.utils.data.DataLoader(dataset_training, batch_size= batch_size, 
                                                         shuffle=False,  sampler=train_sampler, num_workers=8)  
         data_loader_validate = torch.utils.data.DataLoader(dataset_validate, batch_size= batch_size, 
                                                         shuffle=False, sampler= val_sampler, num_workers=8) 
         data_loader_test     = torch.utils.data.DataLoader(dataset_test, batch_size=batch_size, 
-                                                        shuffle=False, sampler= test_sampler, num_workers=8)  #
+                                                        shuffle=False, num_workers=8)  #
     else: 
         data_loader_training = torch.utils.data.DataLoader(dataset_training, batch_size= batch_size, 
                                                         shuffle=True,  num_workers=8) 
@@ -135,8 +170,6 @@ def dataloaders(
 
     return data_loader_training, data_loader_validate, data_loader_test
 
-
-    
 class dataloader_RGB(object):
     def __init__(self, npy_dir, csv_dir, 
                                 category: str, 
@@ -165,7 +198,7 @@ class dataloader_RGB(object):
 
 
         
-        self.NewDf = self.NewDf[:2000]
+        # self.NewDf = self.NewDf[:100]
         self.stats_dict = np.load('/data2/hkaman/Data/Coords/met_stats.npz', allow_pickle=True)
         self.stats_dict = self.stats_dict['arr_0'].item() 
 
@@ -205,12 +238,13 @@ class dataloader_RGB(object):
             image = np.concatenate([S2, block_timeseries_encode, block_means], axis = 0)
 
 
-        elif self.in_channels ==8:
+        elif self.in_channels == 8: 
             # Sentinel-1 and -2 and time encoding
             S2_path = self.NewDf.loc[idx]['IMG_PATH']
             S2 = self._crop_gen(S2_path, xcoord, ycoord) 
             S2 = np.swapaxes(S2, -1, 0)   
             S2 = S2 / 255.
+
 
             block_timeseries_encode = self._time_series_encoding(block_id)
             WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
@@ -426,6 +460,7 @@ class dataloader_RGB(object):
     
     def _crop_gen(self, src, xcoord, ycoord):
         src = np.load(src, allow_pickle=True)
+
         if src.ndim == 2:
             src = np.expand_dims(src, axis = 0)
             src = np.expand_dims(src, axis = -1)

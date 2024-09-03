@@ -281,6 +281,7 @@ class Configs():
                  in_channels: int, 
                  out_channels: int, 
                  embed_dim: int, 
+                 context_dim: int,
                  mlp_dim: int, 
                  pool:str, 
                  num_heads: int, 
@@ -298,6 +299,7 @@ class Configs():
         self.img_size = img_size
         self.patch_size = patch_size
         self.embed_dim = embed_dim
+        self.context_dim = context_dim
         self.mlp_dim = mlp_dim
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -320,7 +322,8 @@ class Configs():
 
         config.img_size = self.img_size
         config.patch_size = self.patch_size 
-        config.embed_dim = self.embed_dim 
+        config.embed_dim = self.embed_dim
+        config.context_dim = self.context_dim
         config.mlp_dim = self.mlp_dim
         config.in_channels = self.in_channels
         config.out_channels= self.out_channels

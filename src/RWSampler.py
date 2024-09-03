@@ -33,7 +33,6 @@ def return_num_samples_of_bins(df):
 
     return  dict_
 
-
 def get_lds_kernel_window(kernel, ks, sigma):
     assert kernel in ['gaussian', 'triang', 'laplace']
     half_ks = (ks - 1) // 2
@@ -58,7 +57,6 @@ def calc_lds_effective_dist(df, ks: int, sigma: int):
     eff_label_dist = convolve1d(np.array(emp_label_dist), weights=lds_kernel_window, mode='constant')
 
     return emp_label_dist, eff_label_dist
-
 
 def lds_prepare_weights(labels, reweight, max_target=30, lds=True, lds_kernel='gaussian', lds_ks=5, lds_sigma=2):
     assert reweight in {'none', 'inverse', 'sqrt_inv'}
