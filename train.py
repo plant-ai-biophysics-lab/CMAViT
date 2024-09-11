@@ -3,17 +3,10 @@ import argparse
 import numpy as np
 from src import dataloader
 from models import engine
-from models.configs import Configs, set_seed
+from models.configs import Configs, set_seed, to_bool
 set_seed(1987)
-
-
 from models.cvt import ClimMgmtAware_ViT
-
-
-
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Check if there is GPU(s): {torch.cuda.is_available()}")
-
 
 
 def main(args):
@@ -36,23 +29,9 @@ def main(args):
     tokenizer = args.tokenizer
     mask_modality = args.mask_modality
 
+    resampling = to_bool(resampling)
+    cond = to_bool(cond)
 
-    if in_channels == 3: 
-        print(f"Input data has {in_channels} channles including HV, VV and Time")
-    if in_channels == 4: 
-        print(f"Input data has {in_channels} channles including RGB-Nir")
-    if in_channels == 5: 
-        print(f"Input data has {in_channels} channles including RGB-Nir and Time")
-    if in_channels == 7: 
-        print(f"Input data has {in_channels} channles including RGB-Nir, HV, VV and Time")
-
-
-    if resampling.lower() == "true":
-        resampling = True
-    elif resampling.lower() == "false":
-        resampling = False
-    else:
-        resampling = bool(resampling)  
         
     data_loader_training, data_loader_validate, data_loader_test = dataloader.get_dataloaders(
         batch_size = batch_size, 
@@ -85,21 +64,10 @@ def main(args):
         mask_modality = mask_modality
         ).call()
     
-
-    if cond.lower() == "true":
-        cond = True
-    elif cond.lower() == "false":
-        cond = False
-    else:
-        cond = bool(cond)  
-
-    print(f"Conditional training = {cond}; The model is {'under' if cond else 'NOT under'} Yield Zone Conditional training process!")
-
     model = ClimMgmtAware_ViT(config).to(device)
-
-
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Number of parameters: {num_params}")
+    print(f"Model's amount of parameters: {num_params}")
+    print("===================================================================")
 
     YE = engine.ViTYieldEst(model, 
                                  lr = lr, 
@@ -118,7 +86,6 @@ def main(args):
     _ = YE.predict(model, data_loader_validate, category= 'valid', iter = 1)
     _ = YE.predict(model, data_loader_test, category= 'test', iter = 1)
 
-
 if __name__ == "__main__":
 
     # Parse command line arguments
@@ -133,7 +100,7 @@ if __name__ == "__main__":
     parser.add_argument("--dropout",     type=float, default = 0.3,   help = "Amount of dropout")
     parser.add_argument("--postnorm",    type=str,   default = False, help = "Post or Before Normalization for Self-Attention")
     parser.add_argument("--lr",          type=float, default = 0.0001, help = "Learning rate")
-    parser.add_argument("--wd",          type=float, default = 0.01,  help = "Value of weight decay")
+    parser.add_argument("--wd",          type=float, default = 0.1,  help = "Value of weight decay")
     parser.add_argument("--epochs",      type=int,   default = 50,   help = "The number of epochs")
     parser.add_argument("--loss",        type=str,   default = "mse", help = "Loss function  mse wmse huber wass")
     parser.add_argument("--resampling",  type=str,   default = 'false', help = "Weight resampling status") 

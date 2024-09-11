@@ -4,11 +4,9 @@ import pandas as pd
 import torch
 from PyPDF2 import PdfReader
 import numpy as np
-
-# from model import configs, engine
-seed = 1987 #+ engine.get_rank()
-torch.manual_seed(seed)
-np.random.seed(seed)
+import cv2
+from models.configs import set_seed
+set_seed(1987)
 
 EXTREME_LOWER_THRESHOLD = 9  #22.24
 EXTREME_UPPER_THRESHOLD = 22 #54.36
@@ -46,7 +44,37 @@ def cost_sensitive_weight_sampler(df):
     
     return NormWeights
 
-def dataloaders(
+def cost_sensitive_weight_sampler2(df):
+    bins = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
+    
+    # df['label_mean'] = df['label_path'].apply(lambda path: np.mean(np.array(Image.open(path))))
+    count_list = df['patch_mean'].value_counts(bins=bins, sort=False)
+    count_sum = np.sum(count_list)
+    
+    dict_ = {
+        "all": (count_list, count_sum)
+    }
+    
+    weight = [] 
+    for idx, row in df.iterrows():
+        label_mean = row['patch_mean']
+        get_label_count = dict_["all"][0][label_mean]
+        get_total_sum = dict_["all"][1]
+        
+        # Use logarithmic scaling for weights
+        row_weight = np.log(1 + get_total_sum / get_label_count) if get_label_count != 0 else 0
+        weight.append(row_weight)
+    
+    weight = np.array(weight)
+    df['weight'] = weight
+    total_weight_sum = df['weight'].sum()
+    NormWeights = df['weight'] / total_weight_sum
+    
+    return NormWeights
+
+
+
+def get_dataloaders(
         batch_size:int, 
         img_size: int,
         in_channels:int, 
@@ -57,8 +85,7 @@ def dataloaders(
     root_data_dir = '/data2/hkaman/Data/'
     root_exp_dir = '/data2/hkaman/Projects/'
 
-    exp_output_dir = root_exp_dir + 'ViT/EXPs/July/' + 'EXP_' + exp_name
-
+    exp_output_dir = root_exp_dir + 'ViT/EXPs/Sep/' + 'EXP_' + exp_name
 
     isExist  = os.path.isdir(exp_output_dir)
 
@@ -81,7 +108,6 @@ def dataloaders(
         train_csv = pd.read_csv('/data2/hkaman/Data/Coords/Planet/BHO/train.csv', index_col=0)
         train_csv.to_csv(os.path.join(exp_output_dir + '/coords','train.csv'))
         valid_csv = pd.read_csv('/data2/hkaman/Data/Coords/Planet/BHO/val.csv', index_col= 0)
-
         valid_csv.to_csv(os.path.join(exp_output_dir + '/coords','val.csv'))
         test_csv  = pd.read_csv('/data2/hkaman/Data/Coords/Planet/BHO/test.csv', index_col= 0)
         test_csv.to_csv(os.path.join(exp_output_dir + '/coords','test.csv'))
@@ -98,7 +124,7 @@ def dataloaders(
         data_dir = root_data_dir + 'planet/data/'
 
 
-    dataset_training = dataloader_RGB(
+    dataset_training = DataCreator(
         data_dir, 
         exp_output_dir, 
         category = 'train', 
@@ -106,7 +132,7 @@ def dataloaders(
         in_channels = in_channels,
     )
 
-    dataset_validate = dataloader_RGB(
+    dataset_validate = DataCreator(
         data_dir, 
         exp_output_dir, 
         category = 'val',  
@@ -114,7 +140,7 @@ def dataloaders(
         in_channels = in_channels,
     )
     
-    dataset_test = dataloader_RGB(
+    dataset_test = DataCreator(
         data_dir, 
         exp_output_dir, 
         category = 'test',  
@@ -131,34 +157,26 @@ def dataloaders(
         if resmapling_status: 
             print(f"resampling is {resmapling_status}, The dataloader is processing cost-sensitive resampling!")
 
-        train_weights = cost_sensitive_weight_sampler(train_csv)#train_csv['NormWeight'].to_numpy() 
+        train_weights = cost_sensitive_weight_sampler2(train_csv) #train_csv['NormWeight'].to_numpy() 
         train_weights = torch.DoubleTensor(train_weights)
         train_sampler = torch.utils.data.sampler.WeightedRandomSampler(
         train_weights, 
         len(train_weights), 
         replacement=True)    
 
-        val_weights   = cost_sensitive_weight_sampler(valid_csv) #valid_csv['NormWeight'].to_numpy() 
+        val_weights   = cost_sensitive_weight_sampler2(valid_csv) #valid_csv['NormWeight'].to_numpy() 
         val_weights   = torch.DoubleTensor(val_weights)
         val_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
         val_weights, 
         len(val_weights), 
         replacement=True)    
     
-        # test_weights   = test_csv['NormWeight'].to_numpy() 
-        # test_weights   = torch.DoubleTensor(test_weights)
-        # test_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
-        # test_weights, 
-        # len(test_weights), 
-        # replacement=True)  
-    
-
         data_loader_training = torch.utils.data.DataLoader(dataset_training, batch_size= batch_size, 
                                                         shuffle=False,  sampler=train_sampler, num_workers=8)  
         data_loader_validate = torch.utils.data.DataLoader(dataset_validate, batch_size= batch_size, 
                                                         shuffle=False, sampler= val_sampler, num_workers=8) 
         data_loader_test     = torch.utils.data.DataLoader(dataset_test, batch_size=batch_size, 
-                                                        shuffle=False, num_workers=8)  #
+                                                        shuffle=False, num_workers=8)  
     else: 
         data_loader_training = torch.utils.data.DataLoader(dataset_training, batch_size= batch_size, 
                                                         shuffle=True,  num_workers=8) 
@@ -167,10 +185,9 @@ def dataloaders(
         data_loader_test     = torch.utils.data.DataLoader(dataset_test, batch_size=batch_size, 
                                                         shuffle=False, num_workers=8) 
 
-
     return data_loader_training, data_loader_validate, data_loader_test
 
-class dataloader_RGB(object):
+class DataCreator(object):
     def __init__(self, npy_dir, csv_dir, 
                                 category: str, 
                                 patch_size: int, 
@@ -185,9 +202,11 @@ class dataloader_RGB(object):
         if category    == 'train': 
             self.NewDf = pd.read_csv(os.path.join(self.csv_dir, 'coords') +'/train.csv', index_col=0) 
             self.NewDf.reset_index(inplace = True, drop = True)
+
         elif category  == 'val': 
             self.NewDf = pd.read_csv(os.path.join(self.csv_dir, 'coords') +'/val.csv', index_col=0)
             self.NewDf.reset_index(inplace = True, drop = True)
+
         elif category  == 'test': 
             self.NewDf = pd.read_csv(os.path.join(self.csv_dir, 'coords') +'/test.csv', index_col=0)
             self.NewDf.reset_index(inplace = True, drop = True)
@@ -196,9 +215,6 @@ class dataloader_RGB(object):
         assert not np.isnan(self.weights).any()
         self.weights = np.where(self.weights >= 1, self.weights, 1)
 
-
-        
-        # self.NewDf = self.NewDf[:100]
         self.stats_dict = np.load('/data2/hkaman/Data/Coords/met_stats.npz', allow_pickle=True)
         self.stats_dict = self.stats_dict['arr_0'].item() 
 
@@ -213,6 +229,8 @@ class dataloader_RGB(object):
         sp_id = self.NewDf.loc[idx]['space']
         t_id = self.NewDf.loc[idx]['trellis_id']
 
+
+
         if self.in_channels == 4:
             # only Sentinel 1 and time encoding
             WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
@@ -223,28 +241,26 @@ class dataloader_RGB(object):
             S1 = np.swapaxes(S1, -1, 0)
             image = np.concatenate([S1, block_timeseries_encode, block_means], axis = 0)
 
-        
         elif self.in_channels == 6:
-            # only Sentinel-2 and time encoding
-
             S2_path = self.NewDf.loc[idx]['IMG_PATH']
             S2 = self._crop_gen(S2_path, xcoord, ycoord) 
-            S2 = np.swapaxes(S2, -1, 0)    
+            S2 = np.swapaxes(S2, -1, 0)   
+            S2 = self.histogram_equalization_4d(S2)
             S2 = S2 / 255.
 
+            block_timeseries_encode = self._time_series_encoding(block_id)
             WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
             block_means = self.add_input_within_bc_mean(WithinBlockMean)
-            block_timeseries_encode = self._time_series_encoding(block_id)
-            image = np.concatenate([S2, block_timeseries_encode, block_means], axis = 0)
 
+            image = np.concatenate([S2, block_timeseries_encode, block_means], axis = 0)
 
         elif self.in_channels == 8: 
             # Sentinel-1 and -2 and time encoding
             S2_path = self.NewDf.loc[idx]['IMG_PATH']
             S2 = self._crop_gen(S2_path, xcoord, ycoord) 
             S2 = np.swapaxes(S2, -1, 0)   
+            S2 = self.histogram_equalization_4d(S2)
             S2 = S2 / 255.
-
 
             block_timeseries_encode = self._time_series_encoding(block_id)
             WithinBlockMean = self.NewDf.loc[idx]['win_block_mean']
@@ -257,7 +273,6 @@ class dataloader_RGB(object):
             image = np.concatenate([S2, S1, block_timeseries_encode, block_means], axis = 0)
 
         image = torch.as_tensor(image, dtype=torch.float32)
-        image[torch.isnan(image)] = 0
 
         # MASK 
         label_path = self.NewDf.loc[idx]['LABEL_PATH']
@@ -272,6 +287,7 @@ class dataloader_RGB(object):
         # Text
         text_path = self.NewDf.loc[idx]['TEXT_PATH']
         EmbText = self._load_text_file(text_path)
+
 
         # Meteorological data
         met_path = self.NewDf.loc[idx]['MET_PATH']
@@ -460,17 +476,63 @@ class dataloader_RGB(object):
     
     def _crop_gen(self, src, xcoord, ycoord):
         src = np.load(src, allow_pickle=True)
-
         if src.ndim == 2:
             src = np.expand_dims(src, axis = 0)
             src = np.expand_dims(src, axis = -1)
         crop_src = src[:, xcoord:xcoord + self.wsize, ycoord:ycoord + self.wsize, :]
         return crop_src 
     
+    def patch_cultivar_matrix(self, cul_id):
+        cultivar_matrix = np.full((1, self.wsize, self.wsize, 15), (1/cul_id)) 
+        
+        return cultivar_matrix
+    
+    def patch_rw_matrix(self, rw):
+        rw_matrix = np.full((1, self.wsize, self.wsize, 15), (1/rw)) 
+        
+        return rw_matrix    
+    
+    def patch_sp_matrix(self, sp):
+        sp_matrix = np.full((1, self.wsize, self.wsize, 15), (1/sp)) 
+        return sp_matrix
+        
+    def patch_tid_matrix(self, tid):
+        tid_matrix = np.full((1, self.wsize, self.wsize, 15), (1/tid))  
+        
+        return tid_matrix
+    
     def add_input_within_bc_mean(self, bloks_mean):
-        fill_matrix_bmean = np.full((1, self.wsize, self.wsize, 15), bloks_mean) 
+        
+        fill_matrix_bmean = np.full((1, self.wsize, self.wsize, 15), bloks_mean) / 30. 
+
         return fill_matrix_bmean
     
+    def histogram_equalization_4d(self, image):
+        """
+        Apply histogram equalization to each channel of each timeseries frame in the image,
+        ensuring each slice is an 8-bit single-channel image.
+
+        Args:
+        - image (numpy.ndarray): Input image array with values normalized to 0-255 and shape (C, H, W, T).
+
+        Returns:
+        - (numpy.ndarray): The histogram equalized image.
+        """
+        # Check if image dtype is uint8, convert if necessary
+        if image.dtype != np.uint8:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+
+        # Prepare the output array with the same shape
+        eq_image = np.empty_like(image)
+
+        # Iterate over each channel and timeseries
+        for c in range(image.shape[0]):  # For each channel
+            for t in range(image.shape[3]):  # For each time point
+                # Apply histogram equalization to each slice (channel, :, :, timeseries)
+                eq_image[c, :, :, t] = cv2.equalizeHist(image[c, :, :, t])
+
+        return eq_image
+
     def _time_series_encoding(self, block_id):
         timeseries = None
 

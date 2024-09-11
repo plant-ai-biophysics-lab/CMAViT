@@ -7,22 +7,15 @@ import os
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import numpy as np
-import random
-seed = 1987
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+from models.configs import set_seed
+set_seed(1987)
 
 from models.attention import TextEmbed, AccMetEmbed, AccImgEmbed, MultiRegressionHead, YzEmbed, Stem
 from models.attention import TextEncoder, SpatialMetEncoder, MultiModalTransformer, SpatialMetYzEncoder 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-class MMST_ViT(nn.Module):
+class ClimMgmtAware_ViT(nn.Module):
     def __init__(self, config: Union[Dict]): #
         super().__init__()
 
@@ -33,16 +26,15 @@ class MMST_ViT(nn.Module):
         self.mask_modality = config.mask_modality
 
         # if self.mask_modality != 'text':
-        self.text_embed = TextEmbed(model_name="distilbert-base-uncased", max_length=250)
-        self.text_transformer = nn.ModuleList([TextEncoder(config.context_dim, 
-            config.num_layers, 
-            config.num_heads, 
-            dim_head = 8, 
-            mult=4, 
-            dropout=config.proj_dropout)
-            for i in range(config.num_layers)])
+        # self.text_embed = TextEmbed(model_name="distilbert-base-uncased", max_length=250)
+        # self.text_transformer = nn.ModuleList([TextEncoder(config.context_dim, 
+        #     config.num_layers, 
+        #     config.num_heads, 
+        #     dim_head = 8, 
+        #     mult=4, 
+        #     dropout=config.proj_dropout)
+        #     for i in range(config.num_layers)])
             
-
         # self.img_embeds = nn.ModuleList([AccImgEmbed(config, i).to(device) for i in range(1, 16)])
         self.img_embeds = AccImgEmbed(config, 15).to(device)
         # self.yz_embeds = YzEmbed(config, 15).to(device)
@@ -58,30 +50,28 @@ class MMST_ViT(nn.Module):
             mult=4, 
             dropout=config.proj_dropout)
         
-
-        self.cross_attn_encoder = MultiModalTransformer(
-            config.embed_dim, 
-            config.num_layers, 
-            config.num_heads, 
-            dim_head = 96, 
-            context_dim=config.context_dim, 
-            mult=4,  
-            dropout=config.proj_dropout)
+        # self.cross_attn_encoder = MultiModalTransformer(
+        #     config.embed_dim, 
+        #     config.num_layers, 
+        #     config.num_heads, 
+        #     dim_head = 96, 
+        #     context_dim=config.context_dim, 
+        #     mult=4,  
+        #     dropout=config.proj_dropout)
         
-        self.pool = config.pool
+        # self.pool = config.pool
         self.head = MultiRegressionHead(config)
-        self.norm = nn.LayerNorm(config.embed_dim)
+        # self.norm = nn.LayerNorm(config.embed_dim)
+        # self.apply(self._init_weights)
 
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.001)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
+    # def _init_weights(self, m):
+    #     if isinstance(m, nn.Linear):
+    #         trunc_normal_(m.weight, std =.009)
+    #         if isinstance(m, nn.Linear) and m.bias is not None:
+    #             nn.init.constant_(m.bias, 0)
+    #     elif isinstance(m, nn.LayerNorm):
+    #         nn.init.constant_(m.bias, 0)
+    #         nn.init.constant_(m.weight, 1.0)
 
     def _text_maskout_forward(self, img, met):
 
@@ -254,11 +244,13 @@ class MMST_ViT(nn.Module):
 
         elif self.mask_modality == None:
             
-            out, text_attn = self._single_forward(img = img, context = context, met = met)
+            out = self._single_im_forward(img = img, met = met)
 
         preds = self.head(out)
 
         return preds
+
+
 
 
 

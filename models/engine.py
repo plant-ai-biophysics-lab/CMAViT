@@ -12,33 +12,13 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from models import configs
 from src import losses
-from models.mmst import MMST_ViT
+# from models.mmst import ClimMgmtAware_ViT
 
-
+from models.configs import set_seed
+set_seed(1987)
 #======================================================================================================================================#
 #====================================================== Training Config ===============================================================#
 #======================================================================================================================================#   
-# def is_dist_avail_and_initialized():
-#     if not dist.is_available():
-#         return False
-#     if not dist.is_initialized():
-#         return False
-#     return True
-
-# def get_rank():
-#     if not is_dist_avail_and_initialized():
-#         return 0
-#     return dist.get_rank()
-
-import numpy as np
-import random
-seed = 1987
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
 
 class EarlyStopping():
     def __init__(self, tolerance=30, min_delta=0):
@@ -95,9 +75,16 @@ class ViTYieldEst:
         self.exp = exp
 
         params = [p for p in self.model.parameters() if p.requires_grad]
-        self.optimizer = torch.optim.AdamW(params, lr=self.lr, weight_decay=self.wd)
+        # self.optimizer = torch.optim.AdamW(params, lr=self.lr, weight_decay=self.wd)
+        self.optimizer = torch.optim.AdamW(
+                params,               # Model parameters to optimize
+                lr=self.lr,              # Lower learning rate, you can experiment with values like 1e-4, 1e-5, etc.
+                # betas=(0.9, 0.98),    # Adjust beta values, slower decay of the running averages
+                weight_decay=self.wd,    # L2 regularization strength
+                # amsgrad=True          # Use the AMSGrad variant of AdamW
+                )
 
-        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/July/' + 'EXP_' + self.exp
+        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + self.exp
 
         self.best_model_name = os.path.join(self.exp_output_dir, 'best_model_' + self.exp + '.pth')
         self.last_model_name = os.path.join(self.exp_output_dir, 'last_model_' + self.exp + '.pth')
@@ -198,7 +185,7 @@ class ViTYieldEst:
             loss_stats['val'].append(val_epoch_loss/len(data_loader_validate))
 
             training_duration_time = (time.time() - training_start_time)        
-            print(f'Epoch {epoch+0:03}: | Time(s): {training_duration_time:.3f}| Train Loss: {train_epoch_loss/len(data_loader_training):.4f} | Val Loss: {val_epoch_loss/len(data_loader_validate):.4f}') 
+            print(f'Epoch {epoch+0:03} [{training_duration_time:.3f} (s)]: Train MSE Loss: {train_epoch_loss/len(data_loader_training):.4f} | Val MSE Loss: {val_epoch_loss/len(data_loader_validate):.4f}') 
 
             checkpoint = {
             'epoch': epoch + 1,
@@ -404,8 +391,6 @@ class ViTYieldEst:
             return losses.mse_loss(y_pred, y_true)
         elif loss_type == 'wmse':
             return losses.weighted_mse_loss(y_pred, y_true, weight)
-        elif loss_type == 'morans':
-            return losses.MoranCalculator()(y_pred, y_true)
 
     def _calculate_timeseries_loss(self, y_true, list_y_pred, loss_type, weights):
         """

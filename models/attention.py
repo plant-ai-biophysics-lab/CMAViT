@@ -16,59 +16,12 @@ from timm.models.layers import DropPath, trunc_normal_, to_2tuple
 from transformers import GPT2Model, GPT2Tokenizer
 from transformers import AutoTokenizer, AutoModel
 
-import numpy as np
-import random
-seed = 1987
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-
+from models.configs import set_seed
+set_seed(1987)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-
-
-class DoubleConv(nn.Module):
-    """(convolution => [BN] => ReLU) * 2"""
-    def __init__(self, in_channels, out_channels):
-        super(DoubleConv, self).__init__()
-        self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        return self.double_conv(x)
-
-class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(UNet, self).__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-        self.conv1 = DoubleConv(in_channels, 64)
-        self.conv2 = DoubleConv(64, 128)
-        self.conv3 = DoubleConv(128, 256)
-        self.conv4 = DoubleConv(256, 128)
-        self.conv5 = DoubleConv(128, 64)
-        self.conv6 = nn.Conv2d(64, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        x1 = self.conv1(x)
-        x2 = self.conv2(interpolate(x1, scale_factor=0.5, mode='bilinear', align_corners=True))
-        x3 = self.conv3(interpolate(x2, scale_factor=0.5, mode='bilinear', align_corners=True))
-        x4 = self.conv4(interpolate(x3, scale_factor=2, mode='bilinear', align_corners=True))
-        x5 = self.conv5(interpolate(x4, scale_factor=2, mode='bilinear', align_corners=True))
-        out = self.conv6(x5)
-        return out
 
 def exists(val):
     return val is not None
@@ -494,8 +447,6 @@ class Mlp(nn.Module):
 
 #     #     return self.qkv.relprop(cam_qkv, **kwargs)
 
-
-
 class TextEmbed(nn.Module):
     def __init__(self, model_name="distilbert-base-uncased", max_length=250, device=None):
         super().__init__()
@@ -514,9 +465,9 @@ class TextEmbed(nn.Module):
         
         attention_mask = inputs['attention_mask'].bool()
 
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            embeddings = outputs.last_hidden_state
+        # with torch.no_grad():
+        outputs = self.model(**inputs)
+        embeddings = outputs.last_hidden_state
         
         if embeddings.size(1) < self.max_length:
             pad_size = self.max_length - embeddings.size(1)
@@ -601,59 +552,56 @@ class TextEncoder(nn.Module):
 #========================================================================================#
 #========================================================================================#
 #========================================================================================#
-class Stem(nn.Module):
-    def __init__(self, in_chs, out_chs):
-        super(Stem, self).__init__()
-        self.stem_block = nn.Sequential(
-            nn.Conv2d(in_chs, out_chs // 2, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(out_chs // 2),
-            nn.ReLU(),
-            nn.Conv2d(out_chs // 2, out_chs, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(out_chs),
-            nn.ReLU(),
-        )
-    
-    def forward(self, x):
-        # x is of shape (b, c, h, w, t)
-        batch_size, channels, height, width, time_steps = x.shape
-        outputs = []
+class Tokenizer(nn.Module):
+    def __init__(self,
+                 kernel_size, stride, padding,
+                 pooling_kernel_size=3, pooling_stride=2, pooling_padding=1,
+                 n_conv_layers=1,
+                 n_input_channels=3,
+                 n_output_channels=64,
+                 in_planes=64,
+                 activation=None,
+                 max_pool=True,
+                 conv_bias=False):
         
-        # Process each time step separately
-        for t in range(time_steps):
-            x_t = x[:, :, :, :, t]  # Extract the t-th time slice (shape: (b, c, h, w))
-            out_t = self.stem_block(x_t)  # Apply the stem block to this time slice
-            outputs.append(out_t.unsqueeze(-1))  # Add the time dimension back
-        
-        # Stack the outputs along the time dimension
-        output = torch.cat(outputs, dim=-1)  # The output shape will be (b, out_chs, h, w, t)
-        
-        return output
+        super(Tokenizer, self).__init__()
 
-class LocalIntegration(nn.Module):
-    """
-    """
-    def __init__(self, dim, ratio=1, act_layer=nn.ReLU, norm_layer=nn.GELU):
-        super().__init__()
-        mid_dim = round(ratio * dim)
-        self.network = nn.Sequential(
-            nn.Conv2d(dim, mid_dim, 1, 1, 0),
-            norm_layer(mid_dim),
-            nn.Conv2d(mid_dim, mid_dim, 3, 1, 1, groups=mid_dim),
-            act_layer(),
-            nn.Conv2d(mid_dim, dim, 1, 1, 0),
-        )
+        n_filter_list = [n_input_channels] + \
+                        [in_planes for _ in range(n_conv_layers - 1)] + \
+                        [n_output_channels]
+
+        self.conv_layers = nn.Sequential(
+            *[nn.Sequential(
+                nn.Conv2d(n_filter_list[i], n_filter_list[i + 1],
+                          kernel_size=(kernel_size, kernel_size),
+                          stride=(stride, stride),
+                          padding=(padding, padding), bias=conv_bias),
+                nn.Identity() if activation is None else activation(),
+                nn.MaxPool2d(kernel_size=pooling_kernel_size,
+                             stride=pooling_stride,
+                             padding=pooling_padding) if max_pool else nn.Identity()
+            )
+                for i in range(n_conv_layers)
+            ])
+
+        self.flattener = nn.Flatten(2, 3)
+        # self.apply(self.init_weight)
+
+    def sequence_length(self, n_channels=3, height=224, width=224):
+        return self.forward(torch.zeros((1, n_channels, height, width))).shape[1]
 
     def forward(self, x):
-        batch_size, channels, height, width, time_steps = x.shape
-        outputs = []
-        for t in range(time_steps):
-            x_t = x[:, :, :, :, t]  # Extract the t-th time slice (shape: (b, c, h, w))
-            out_t = self.network(x)
-            outputs.append(out_t.unsqueeze(-1))
+        B, T = x.shape[0], x.shape[-1]
+        x = rearrange(x, 'b c w h t -> (b t) c w h')
+        x = self.flattener(self.conv_layers(x)).transpose(-2, -1)
+        x = rearrange(x, '(b t) n e -> b (t n) e', b=B)
+        return x
 
-        output = torch.cat(outputs, dim=-1)
-        return output
-    
+    @staticmethod
+    def init_weight(m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight)
+
 class ImgEmbed(nn.Module):
     """ Image to Patch Embedding
     """
@@ -988,7 +936,6 @@ class SpatialMetEncoder(nn.Module):
 
         return self.norm(x)#, attn_scores
     
-
 #========================================================================================#
 #========================================================================================#
 #========================================================================================#
@@ -1369,7 +1316,7 @@ class IncrementalMetEncoder(nn.Module):
             x = torch.cat(x_ts_avg, dim=1)
 
         return [self.norm(out) for out in x_ts]
-    
+   
 #========================================================================================#
 #========================================================================================#
 #========================================================================================#
