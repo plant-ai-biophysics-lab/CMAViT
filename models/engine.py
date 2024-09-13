@@ -138,7 +138,7 @@ class ViTYieldEst:
                 else:
                     yieldzone_train = None
 
-                list_ytrain_pred = self.model(img = xtrain, 
+                list_ytrain_pred, _ = self.model(img = xtrain, 
                                                  context = embtext_train, 
                                                  met = mettrain, 
                                                  yz = yieldzone_train, 
@@ -171,7 +171,7 @@ class ViTYieldEst:
                         yieldzone_valid = None
 
 
-                    list_yvalid_pred = self.model(img = xvalid, 
+                    list_yvalid_pred, _ = self.model(img = xvalid, 
                                                      context = embtext_valid, 
                                                      met = metvalid, 
                                                      yz = yieldzone_valid, 
@@ -238,14 +238,14 @@ class ViTYieldEst:
                     embmatrix = sample['EmbText']
                     # yieldzone = sample['YZ'].to(device)
             
-                    pred_list = self.model(img = x, 
+                    pred_list, text_attn_list = self.model(img = x, 
                                             context = embmatrix, 
                                             met = met, 
                                             yz = None, 
-                                            cond = False)
+                                            cond = False) # text_attn_list
 
-                    # if category == 'train':
-                    #     np.save(os.path.join(self.exp_output_dir, f'attn_scores/train_attn_scores_{batch}.npy'), text_attn_list[0].detach().cpu().numpy())
+                    if category == 'train':
+                        np.save(os.path.join(self.exp_output_dir, f'attn_scores/train_attn_scores_{batch}.npy'), text_attn_list[0].detach().cpu().numpy())
 
                     #     # np.save(f'/data2/hkaman/Projects/ViT/EXPs/July/attnscores/train_attn_scores_{batch}.npy', text_attn_list[0].detach().cpu().numpy())
 

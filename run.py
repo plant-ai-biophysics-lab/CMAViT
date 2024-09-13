@@ -8,12 +8,10 @@ set_seed(1987)
 
 
 from models.cvt import ClimMgmtAware_ViT
-
-
+# from models.ClimMgmtAwareViTLRP import ClimMgmtAware_ViT
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Check if there is GPU(s): {torch.cuda.is_available()}")
-
 
 
 def main(args):
@@ -117,7 +115,6 @@ def main(args):
     _ = YE.predict(model, data_loader_training, category= 'train', iter = 1)
     _ = YE.predict(model, data_loader_validate, category= 'valid', iter = 1)
     _ = YE.predict(model, data_loader_test, category= 'test', iter = 1)
-
 
 if __name__ == "__main__":
 

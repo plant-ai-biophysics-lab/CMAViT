@@ -14,10 +14,21 @@ sns.set_theme(style='white')
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
 from scipy.stats import pearsonr
+from IPython.core.display import HTML, display
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import tiktoken  
+from PyPDF2 import PdfReader
+from transformers import BertTokenizer, BertModel
+from timm.models.layers import DropPath, trunc_normal_, to_2tuple
+from transformers import GPT2Model, GPT2Tokenizer
+from transformers import AutoTokenizer, AutoModel
+import re
 
 import sys
 sys.path.append('../')
-from models import configs
+from models.configs import Configs, set_seed
+set_seed(1987)
 #=============================================================================================#
 #=============================================================================================#
 #=============================================================================================#
@@ -567,7 +578,7 @@ class performance():
         len_C3 = len(test_df_ytrue[np.where(test_df_ytrue >= th2)])
         #
         true_labels = self.test_df['ytrue'].values * HECTARE_TO_ACRE_SCALE
-        pred_labels = self.test_df['ypred_w15'].values * HECTARE_TO_ACRE_SCALE
+        pred_labels = self.test_df['ypred_w1'].values * HECTARE_TO_ACRE_SCALE
 
         #if i < th1: 
         true_label_C1 = true_labels[np.where((true_labels >= 0) & (true_labels < th1))]
@@ -582,15 +593,113 @@ class performance():
         pred_label_C3 = pred_labels[np.where(true_labels >= th2)]
 
         All_R2, All_MAE, All_RMSE, All_MAPE, _, _ = regression_metrics(true_labels, pred_labels)
-        print(f"C1 num samples: {len_C1} | C2 num samples: {len_C2} | C3 num samples: {len_C3}")
+        # print(f"C1 num samples: {len_C1} | C2 num samples: {len_C2} | C3 num samples: {len_C3}")
         C1_R2, C1_MAE, C1_RMSE, C1_MAPE, _, _ = regression_metrics(true_label_C1, pred_label_C1)
         C2_R2, C2_MAE, C2_RMSE, C2_MAPE, _, _ = regression_metrics(true_label_C2, pred_label_C2)
         C3_R2, C3_MAE, C3_RMSE, C3_MAPE, _, _ = regression_metrics(true_label_C3, pred_label_C3)
 
-        print(f"C1 is yield value between 0 and {th1}, C2 is yield value between {th1} and {th2}, and C3 is yield value bigger than {th2}")
+        # print(f"C1 is yield value between 0 and {th1}, C2 is yield value between {th1} and {th2}, and C3 is yield value bigger than {th2}")
         print(f"All: MAE = {All_MAE:.2f}, MAPE = {All_MAPE:.2f} | C1: MAE = {C1_MAE:.2f}, MAPE = {C1_MAPE:.2f} | C2: MAE = {C2_MAE:.2f}, MAPE = {C2_MAPE:.2f} | C3: MAE = {C3_MAE:.2f}, MAPE = {C3_MAPE:.2f}")
         print(f"=========================================================================================================================")
-        return [C1_MAE, C1_MAPE, C2_MAE, C2_MAPE, C3_MAE, C3_MAPE]
+        # return [C1_MAE, C1_MAPE, C2_MAE, C2_MAPE, C3_MAE, C3_MAPE]
+
+    def sensivity_mape_per_yield_range(self, keyword: str, th1: int, th2: int):
+        cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+        test_df_ytrue = pd.read_csv(os.path.join(self.exp_output_dir, self.exp_name + '_test_'+ cleaned_keyword +'.csv'))
+        test_df_ytrue = test_df_ytrue[test_df_ytrue['ypred_w1'] > 0]
+        # test_df_ytrue = self.test_df['ytrue'].values * HECTARE_TO_ACRE_SCALE
+
+        # len_C1 = len(test_df_ytrue[np.where((test_df_ytrue >= 0) & (test_df_ytrue < th1))])
+        # len_C2 = len(test_df_ytrue[np.where((test_df_ytrue >= th1) & (test_df_ytrue < th2))])
+        # len_C3 = len(test_df_ytrue[np.where(test_df_ytrue >= th2)])
+        #
+        true_labels = test_df_ytrue['ytrue'].values * HECTARE_TO_ACRE_SCALE
+        pred_labels = test_df_ytrue['ypred_w1'].values * HECTARE_TO_ACRE_SCALE
+
+        #if i < th1: 
+        true_label_C1 = true_labels[np.where((true_labels >= 0) & (true_labels < th1))]
+        pred_label_C1 = pred_labels[np.where((true_labels >= 0) & (true_labels < th1))]
+
+        #elif (i >= th1) & (i < th2):
+        true_label_C2 = true_labels[np.where((true_labels >= th1) & (true_labels < th2))]
+        pred_label_C2 = pred_labels[np.where((true_labels >= th1) & (true_labels < th2))]
+
+        #elif i >= th2: 
+        true_label_C3 = true_labels[np.where(true_labels >= th2)]
+        pred_label_C3 = pred_labels[np.where(true_labels >= th2)]
+
+        All_R2, All_MAE, All_RMSE, All_MAPE, _, _ = regression_metrics(true_labels, pred_labels)
+        # print(f"C1 num samples: {len_C1} | C2 num samples: {len_C2} | C3 num samples: {len_C3}")
+        C1_R2, C1_MAE, C1_RMSE, C1_MAPE, _, _ = regression_metrics(true_label_C1, pred_label_C1)
+        C2_R2, C2_MAE, C2_RMSE, C2_MAPE, _, _ = regression_metrics(true_label_C2, pred_label_C2)
+        C3_R2, C3_MAE, C3_RMSE, C3_MAPE, _, _ = regression_metrics(true_label_C3, pred_label_C3)
+
+        # print(f"C1 is yield value between 0 and {th1}, C2 is yield value between {th1} and {th2}, and C3 is yield value bigger than {th2}")
+        print(f"All: MAE = {All_MAE:.2f}, MAPE = {All_MAPE:.2f} | C1: MAE = {C1_MAE:.2f}, MAPE = {C1_MAPE:.2f} | C2: MAE = {C2_MAE:.2f}, MAPE = {C2_MAPE:.2f} | C3: MAE = {C3_MAE:.2f}, MAPE = {C3_MAPE:.2f}")
+        print(f"=========================================================================================================================")
+        # return [C1_MAE, C1_MAPE, C2_MAE, C2_MAPE, C3_MAE, C3_MAPE]
+
+    def plot_sensivity(self, keyword: str, th1: int, th2: int):
+        cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+        test_df_ytrue_modified = pd.read_csv(os.path.join(self.exp_output_dir, self.exp_name + '_test_'+ cleaned_keyword +'.csv'))
+        test_df_ytrue_modified = test_df_ytrue_modified[test_df_ytrue_modified['ypred_w1'] > 0]
+        true_labels_modified = test_df_ytrue_modified['ytrue'].values * HECTARE_TO_ACRE_SCALE
+        pred_labels_modified = test_df_ytrue_modified['ypred_w1'].values * HECTARE_TO_ACRE_SCALE
+
+
+        true_labels_org = self.test_df['ytrue'].values * HECTARE_TO_ACRE_SCALE
+        pred_labels_org = self.test_df['ypred_w1'].values * HECTARE_TO_ACRE_SCALE
+
+
+
+        #if i < th1: 
+        true_label_C1_org= true_labels_org[np.where((true_labels_org >= 0) & (true_labels_org < th1))]
+        pred_label_C1_org = pred_labels_org[np.where((true_labels_org >= 0) & (true_labels_org < th1))]
+        true_label_C1_modified = true_labels_modified[np.where((true_labels_modified >= 0) & (true_labels_modified < th1))]
+        pred_label_C1_modified = pred_labels_modified[np.where((true_labels_modified >= 0) & (true_labels_modified < th1))]
+
+        #elif (i >= th1) & (i < th2):
+        true_label_C2_org = true_labels_org[np.where((true_labels_org >= th1) & (true_labels_org < th2))]
+        pred_label_C2_org = pred_labels_org[np.where((true_labels_org >= th1) & (true_labels_org < th2))]
+        true_label_C2_modified = true_labels_modified[np.where((true_labels_modified >= th1) & (true_labels_modified < th2))]
+        pred_label_C2_modified = pred_labels_modified[np.where((true_labels_modified >= th1) & (true_labels_modified < th2))]
+
+        #elif i >= th2: 
+        true_label_C3_org = true_labels_org[np.where(true_labels_org >= th2)]
+        pred_label_C3_org = pred_labels_org[np.where(true_labels_org >= th2)]
+        true_label_C3_modified = true_labels_modified[np.where(true_labels_modified >= th2)]
+        pred_label_C3_modified = pred_labels_modified[np.where(true_labels_modified >= th2)]
+
+            # Plotting with seaborn
+        fig, axes = plt.subplots(1, 3, figsize=(21, 5))  # 1 row, 3 columns
+
+        # C1 plot
+        sns.kdeplot(pred_label_C1_org, fill=True, label='Original', ax=axes[0])
+        sns.kdeplot(pred_label_C1_modified, fill=True, label='Modified', ax=axes[0])
+        mean_shift_C1 = np.mean(pred_label_C1_modified) - np.mean(pred_label_C1_org)
+        axes[0].legend(title=f"Mean shift: {mean_shift_C1:.2f}")
+        axes[0].set_title(f'C1: true labels < {th1}')
+
+        # C2 plot
+        sns.kdeplot(pred_label_C2_org, fill=True, label='Original', ax=axes[1])
+        sns.kdeplot(pred_label_C2_modified, fill=True, label='Modified', ax=axes[1])
+        mean_shift_C2 = np.mean(pred_label_C2_modified) - np.mean(pred_label_C2_org)
+        axes[1].legend(title=f"Mean shift: {mean_shift_C2:.2f}")
+        axes[1].set_title(f'C2: {th1} <= true labels < {th2}')
+
+        # C3 plot
+        sns.kdeplot(pred_label_C3_org, fill=True, label='Original', ax=axes[2])
+        sns.kdeplot(pred_label_C3_modified, fill=True, label='Modified', ax=axes[2])
+        mean_shift_C3 = np.mean(pred_label_C3_modified) - np.mean(pred_label_C3_org)
+        axes[2].legend(title=f"Mean shift: {mean_shift_C3:.2f}")
+        axes[2].set_title(f'C3: true labels >= {th2}')
+
+        # Display the plots
+        plt.tight_layout()
+        plt.show()
+
+
+
 
     def mape_per_bin_plot(self):
         fig, axs = plt.subplots(1, 1, figsize=(16, 4))
@@ -1292,3 +1401,815 @@ class timeseries_spatial_variability():
         out2 = out_mape.reshape(ytrue.shape[0], ytrue.shape[1])
 
         return out1, out2
+
+
+
+LOW_EXTREME_RANGE_BLOCKS = [32016, 32017, 32018, 32019, 382016, 1032016, 1072016]
+COMMON_RANGE_BLOCKS = [72016, 72019, 122016, 122017, 122018, 122019, 142016, 142017, 142018, 142019, 162016, 162017, 162018, 172016, 172017, 172018, 182016, 182017, 182018, 182019, 382017, 382018, 682016, 682017, 762016, 
+                       762017, 762018, 762019, 1022016, 1022017, 1022018, 1022019, 1032017, 1032018, 1032019, 1072017, 1072018, 1072019, 1112016, 1112017, 1112018, 1112019, 1762017, 1762018, 1762019]
+HIGH_EXTREME_RANGE_BLOCKS = [72017, 72018, 162019]
+
+class TextScoresAnalysis():
+    def __init__(self, exp_name: str, batch_size: int, layer: int, head:int, lrp: str = False):
+        self.exp_name = exp_name
+        self.batch_size = batch_size
+        self.head = head
+        self.layer = layer
+
+        self.root_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep'
+        self.attn_dir = os.path.join(self.root_dir , 'EXP_' + self.exp_name + '/attn_scores')
+
+        self.df = pd.read_csv(os.path.join(self.root_dir, 'EXP_' + self.exp_name, self.exp_name + '_train.csv'))
+        self.TextEncoder = AutoTokenizer.from_pretrained("distilbert-base-uncased")#tiktoken.get_encoding('gpt2')
+
+    def extreme_categ_visualize_text(self):
+
+        main_dict = self._all_blcok_scores()
+
+        low_extreme_dict = {key: main_dict[key] for key in LOW_EXTREME_RANGE_BLOCKS if key in main_dict}
+        common_dict = {key: main_dict[key] for key in COMMON_RANGE_BLOCKS if key in main_dict}
+        high_extreme_dict = {key: main_dict[key] for key in HIGH_EXTREME_RANGE_BLOCKS if key in main_dict}
+
+        low_mean = self._calculate_mean_for_dict(low_extreme_dict)[-1, :, :, self.layer]
+        low_mean = low_mean[2:, 2:]
+        low_mean = np.mean(low_mean, axis=0)
+        low_mean = self._normalize_array(low_mean)
+
+        common_mean = self._calculate_mean_for_dict(common_dict)[-1, :, :, self.layer]
+        common_mean = common_mean[2:, 2:]
+        common_mean = np.mean(common_mean, axis=0)
+        common_mean = self._normalize_array(common_mean)
+
+        high_mean = self._calculate_mean_for_dict(high_extreme_dict)[-1, :, :, self.layer]
+        high_mean = high_mean[2:, 2:]
+        high_mean = np.mean(high_mean, axis=0)
+        high_mean = self._normalize_array(high_mean)
+
+        words = self._text_decode(block = 162017)
+        self._visualize_text(words, low_mean)
+        self._visualize_text(words, common_mean)
+        self._visualize_text(words, high_mean)
+
+    def single_visualize_text(self, block: None):
+        """Use decoded text and attention scores to create a visualization."""
+        words, attention_mask = self._text_decode(block = block)
+        importances = self._single_calc_attn(block = block)
+        print(len(words), len(attention_mask), len(importances))
+
+        filtered_words = [word for word, mask in zip(words, attention_mask) if mask]
+        filtered_importances = [importance for importance, mask in zip(importances, attention_mask) if mask]
+
+
+        self._visualize_text(filtered_words, filtered_importances)
+    
+    def _calculate_mean_for_dict(self, dictionary):
+
+        all_values = []
+        for key, values in dictionary.items():
+            all_values.append(values)
+        
+        # Assuming all values are numeric matrices of the same shape
+        if all_values:
+            mean_value = np.mean(all_values, axis=0)
+        else:
+            mean_value = None  # or handle empty case as needed
+        
+        return mean_value
+   
+    def _find_file_in_directory(self, block):
+        """
+        Search for a specific .txt file in a given directory and return its full path.
+        
+        :param directory: Directory to search in
+        :param filename: Name of the file to search for
+        :return: Full path of the file if found, else None
+        """
+
+        directory = '/data2/hkaman/Data/Livingston/text'
+        # Ensure the filename ends with .txt
+        block = str(block)
+        if not block.endswith('.txt'):
+            block_root_name = block[:-4]
+
+            if len(str(block_root_name)) == 1:
+                block_fullnames = 'LIV_00' + str(block_root_name) + '.txt'
+            elif len(str(block_root_name)) == 2:
+                block_fullnames = 'LIV_0' + str(block_root_name) + '.txt'
+            elif len(str(block_root_name)) == 3:
+                block_fullnames = 'LIV_' + str(block_root_name) + '.txt'
+
+        
+        # Search for the file in the directory
+        for root, _, files in os.walk(directory):
+            if block_fullnames in files:
+                return os.path.join(root, block_fullnames)
+        
+        return None
+
+    def _return_text_of_block(self, block):
+        # Extract the file extension to determine how to process it
+        # block_root_name = block_name[:-4] + 
+        text_path = self._find_file_in_directory(block = block)
+
+        _, file_extension = os.path.splitext(text_path)
+        
+        if file_extension.lower() == '.pdf':
+            # Handle PDF files
+            pdf_loader = PdfReader(open(text_path, "rb"))
+            file_text = ""
+            for page_num in range(len(pdf_loader.pages)):
+                pdf_page = pdf_loader.pages[page_num]
+                if pdf_page.extract_text() is not None:
+                    file_text += pdf_page.extract_text()
+            return file_text
+        
+        elif file_extension.lower() == '.txt':
+            # Handle text files
+            with open(text_path, "r", encoding="utf-8") as file:
+                file_text = file.read()
+            return file_text
+        
+        else:
+            # Unsupported file type
+            raise ValueError("Unsupported file format: " + file_extension)
+
+    def encode(self, text):
+        # Encode the text into tokens
+        return self.TextEncoder(text, return_tensors="pt")['input_ids'][0].tolist()
+    
+    def _text_encode(self, block):
+        max_length = 250
+        text = self._return_text_of_block(block = block)
+        tokens = self.TextEncoder(text, return_tensors="pt", padding='max_length', max_length=max_length)['input_ids'][0].tolist()
+        attention_mask =self.TextEncoder(text, return_tensors="pt", padding='max_length', max_length=max_length)['attention_mask'][0].bool()
+        # inputs = self.TextEncoder(text, padding='max_length', truncation=True, return_tensors="pt", max_length=max_length)
+        # inputs = {key: value for key, value in inputs.items()}
+        
+        # encoded_texts = [self.TextEncoder.encode(text) for text in text]
+        # max_length = 249 
+        # padded_texts = [text[:max_length] + [0] * (max_length - len(text)) for text in encoded_texts]
+        # print(padded_texts)
+        # tokens = np.array(padded_texts, dtype = np.uint32)#.to(self.device)
+        # arr = np.load('/home/hkaman/Documents/multimodel-transformers-vye/Junky/attn_scores.npy', allow_pickle=True).item()
+        # tokens = arr[10]['tokens']
+
+        return tokens, attention_mask
+    
+    def decode_single_token_bytes(self, token_id):
+        # Convert a single token ID to its corresponding text token
+        token = self.TextEncoder.convert_ids_to_tokens(token_id)
+        # Decode the token to a readable string
+        return self.TextEncoder.decode([token_id])
+
+    def _text_decode(self, block):
+        """Decode tokens using the TextEncoder."""
+        # Decode both the text and get token offsets
+        tokens, attention_mask = self._text_encode(block = block)
+        # attention_mask = tokens['attention_mask'].bool()
+        words = [self.decode_single_token_bytes(token) for token in tokens]
+        # words = [t.decode('utf-8') for t in token_bytes]
+        return words, attention_mask
+    
+    def _single_calc_attn(self, block):
+        """Calculate the average attention score for a specific layer and head, excluding the first token."""
+        # Extract the attention scores for the specified head and layer
+        # if ana_status == 'single': 
+        attn_scores = self._single_blcok_scores(block = block)[self.head, :, :, self.layer]#self.attns_arr[self.head, :, :, self.layer]
+        attn_scores = attn_scores[2:, 2:]
+        avg_attn_scores = np.mean(attn_scores, axis=0)
+        norm_attn_scores = self._normalize_array(avg_attn_scores)
+        return norm_attn_scores
+        
+    def _global_cal_attn(self):
+        # elif ana_status == 'global':
+        scores = self._all_blcok_scores()
+        return scores
+    
+    def _normalize_array(self, values):
+        min_old = values.min()
+        max_old = values.max()
+        min_new, max_new = -1, 1
+        normalized_values = [(value - min_old) / (max_old - min_old) * (max_new - min_new) + min_new for value in values]
+        return np.array(normalized_values, dtype= np.float32)
+    
+    def _format_special_tokens(self, word):
+        # Strip underscores often used in tokenized outputs
+        return word.replace('_', ' ')
+
+    def _get_color(self, attr):
+        # clip values to prevent CSS errors (Values should be from [-1,1])
+        attr = max(-1, min(1, attr))
+        if attr > 0:
+            hue = 120
+            sat = 75
+            lig = 100 - int(50 * attr)
+        else:
+            hue = 0
+            sat = 75
+            lig = 100 - int(-40 * attr)
+        return "hsl({}, {}%, {}%)".format(hue, sat, lig)
+
+    def _format_word_importances(self, words, importances):
+        tags = ["<td>"]
+        for word, importance in zip(words, importances):
+            color = self._get_color(importance)
+            tags.append(
+                '<mark style="background-color: {color}; opacity:1.0; line-height:1.75">'
+                '<font color="black"> {word} </font></mark>'.format(color=color, word=word)
+            )
+        tags.append("</td>")
+        return "".join(tags)
+
+    def _visualize_text(self, words, importances, legend=True):
+        print(len(words), len(importances))
+        assert len(words) == len(importances), "Words and importances must have the same length."
+        
+        dom = ["<table style='width: 100%;'>"]
+        dom.append(
+            "<tr>{}</tr>".format(self._format_word_importances(words, importances))
+        )
+        
+        if legend:
+            dom.append(
+                '<div style="border-top: 1px solid; margin-top: 5px; padding-top: 5px; display: inline-block">'
+            )
+            dom.append("<b>Legend: </b>")
+            for value, label in zip([-1, 0, 1], ["Negative", "Neutral", "Positive"]):
+                dom.append(
+                    '<span style="display: inline-block; width: 20px; height: 10px; border: 1px solid; background-color: {value};"></span> {label}  '.format(
+                        value=self._get_color(value), label=label
+                    )
+                )
+            dom.append("</div>")
+        
+        dom.append("</table>")
+        html = HTML("".join(dom))
+        display(html)
+        return html
+    
+    def _return_blocks_patch_info(self):
+        unique_blocks = pd.unique(self.df['block'])
+        block_patch_range = {}
+
+        lower_ = 0
+        for idx, block in enumerate(unique_blocks):
+            size = len(self.df[self.df['block'] == block]) / 256
+            block_patch_range[block] = (lower_, size + lower_)
+            lower_ += size
+
+        return block_patch_range
+    
+    def _single_blcok_scores(self, block):
+
+
+        range_dict = self._return_blocks_patch_info()
+
+        key = block
+        lower_bound = int(range_dict[key][0])
+        upper_bound = int(range_dict[key][1])
+
+        # Calculate the starting and ending file indices
+        start_file_index = lower_bound // self.batch_size
+        end_file_index = (upper_bound - 1) // self.batch_size  # Subtract 1 to handle inclusive upper bound correctly
+
+        # List to store slices of arrays for averaging
+        slices = []
+
+        # Loop over the necessary file indices
+        for file_index in range(start_file_index, end_file_index + 1):
+            filename = f"train_attn_scores_{file_index}.npy"
+            file_path = os.path.join(self.attn_dir, filename)
+            
+            if os.path.exists(file_path):
+                array = np.load(file_path)
+
+                # Calculate slice bounds within the current array
+                slice_start = lower_bound - self.batch_size * file_index
+                slice_end = upper_bound - self.batch_size * file_index
+
+                # Adjust slice bounds to fit within the current array
+                slice_start = max(0, slice_start)
+                slice_end = min(self.batch_size, slice_end)
+
+                if slice_start < slice_end:  # Ensure there is something to slice
+                    slices.append(array[slice_start:slice_end])
+
+        # Concatenate all slices along the first axis and compute the mean
+        if slices:
+            combined_array = np.concatenate(slices, axis=0)
+            mean_array = np.percentile(combined_array, 95, axis=0)#np.mean(combined_array, axis=0)
+
+        return mean_array
+        
+    def _all_blcok_scores(self):
+        scores = {}
+
+        range_dict = self._return_blocks_patch_info()
+        # Iterate over each specified range
+        for key, bounds in range_dict.items():
+            lower_bound = int(bounds[0])
+            upper_bound = int(bounds[1])
+
+            # Calculate the starting and ending file indices
+            start_file_index = lower_bound // self.batch_size
+            end_file_index = (upper_bound - 1) // self.batch_size  # Subtract 1 to handle inclusive upper bound correctly
+
+            # List to store slices of arrays for averaging
+            slices = []
+
+            # Loop over the necessary file indices
+            for file_index in range(start_file_index, end_file_index + 1):
+                filename = f"train_attn_scores_{file_index}.npy"
+                file_path = os.path.join(self.attn_dir, filename)
+                
+                if os.path.exists(file_path):
+                    array = np.load(file_path)
+
+                    # Calculate slice bounds within the current array
+                    slice_start = lower_bound - self.batch_size * file_index
+                    slice_end = upper_bound - self.batch_size * file_index
+
+                    # Adjust slice bounds to fit within the current array
+                    slice_start = max(0, slice_start)
+                    slice_end = min(self.batch_size, slice_end)
+
+                    if slice_start < slice_end:  # Ensure there is something to slice
+                        slices.append(array[slice_start:slice_end])
+
+            # Concatenate all slices along the first axis and compute the mean
+            if slices:
+                combined_array = np.concatenate(slices, axis=0)
+                mean_array = np.mean(combined_array, axis=0) #np.percentile(combined_array, 95, axis=0)
+                scores[key] = mean_array
+
+        return scores
+
+
+#=========================================================================#
+#================================ Predict ================================#
+#=========================================================================#
+import torch
+import numpy as np
+from models import configs
+from models.configs import Configs, set_seed
+set_seed(1987)
+
+from models.cvt import ClimMgmtAware_ViT
+# from models.ClimMgmtAwareViTLRP import ClimMgmtAware_ViT
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+config = Configs(
+    img_size = 16, 
+    patch_size = 8, 
+    embed_dim = 768, 
+    context_dim = 768,
+    mlp_dim = 512, 
+    pool = 'cls',
+    in_channels = 8,
+    out_channels = 1, 
+    num_heads = 8, 
+    num_layers = 6, 
+    cond = False,
+    multi_conv = False,
+    attn_dropout = .3, 
+    proj_dropout = .3, 
+    drop_path = 0.0,
+    post_norm = False, 
+    vis = True, 
+    tokenizer = 'EC',
+    mask_modality = None
+    ).call()
+
+
+def predict(data_loader, exp_name: str, keyword: str, new_value: float):
+
+    exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name
+    best_model_name = os.path.join(exp_output_dir, 'best_model_' + exp_name + '.pth')
+
+    model = ClimMgmtAware_ViT(config).to(device)
+    model.load_state_dict(torch.load(best_model_name))
+
+
+    output_files =[]
+
+    with torch.no_grad():
+        for batch, sample in enumerate(data_loader):
+            x = sample['image'].to(device)
+            met = sample['met'].to(device)
+            y = sample['mask'].detach().cpu().numpy()
+            block_id = sample['block']
+            block_cultivar_id = sample['cultivar']
+            block_x_coords = sample['X']
+            block_y_coords = sample['Y']
+            embmatrix = sample['EmbText']
+
+            pred_list, _ = model(img = x, 
+                                    context = embmatrix, 
+                                    met = met, 
+                                    yz = None, 
+                                    cond = False) 
+
+            this_batch = {"block": block_id, 
+                                "cultivar": block_cultivar_id, 
+                                "X": block_x_coords, "Y": block_y_coords,
+                                "ytrue": y}
+
+            # Dynamically add predictions to the dictionary
+            for i, pred in enumerate(pred_list):
+                key = f"ypred_w{i+1}"  # Creates keys like ypred_w1, ypred_w2, ..., ypred_wN
+                this_batch[key] = pred.detach().cpu().numpy()
+
+            output_files.append(this_batch)
+
+        modified_df = _return_modified_pred_df(output_files, None, 16)
+        cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+        analysis_output_dir = os.path.join(exp_output_dir, 'sensivity')
+        isExist  = os.path.isdir(analysis_output_dir)
+
+        if not isExist:
+            os.makedirs(analysis_output_dir)
+
+        test_df_name = os.path.join(analysis_output_dir, exp_name + '_test_'+ cleaned_keyword + '_' + str(new_value) + '.csv')
+        modified_df.to_csv(test_df_name)
+
+        print("Done!")
+
+def _return_modified_pred_df(pred_npy, blocks_list, wsize=None):
+    if blocks_list is None: 
+        all_block_names = [dict['block'] for dict in pred_npy]#[0]
+        blocks_list = list(set(item for sublist in all_block_names for item in sublist))
+
+
+    OutDF = pd.DataFrame()
+    columns = ['block', 'cultivar', 'x', 'y', 'ytrue']
+    data = {col: [] for col in columns}  # Initialize dictionary for DataFrame
+
+    # Initialize lists for predictions dynamically based on the first item's keys
+    pred_keys = [key for key in pred_npy[0].keys() if key.startswith('ypred')]
+    for key in pred_keys:
+        data[key] = []
+
+    for block in blocks_list:
+        name_split = os.path.split(block)[-1]
+        block_name = name_split.replace(name_split[7:], '')
+        root_name = name_split.replace(name_split[:4], '').replace(name_split[3], '')
+        block_id = root_name
+        
+        res = {key: configs.blocks_information[key] for key in configs.blocks_information.keys() & {block_name}}
+        list_d = res.get(block_name)
+        cultivar_id = list_d[1]
+    
+        for l in range(len(pred_npy)):
+            tb_pred_indices = [i for i, x in enumerate(pred_npy[l]['block']) if x == block]
+            if len(tb_pred_indices) !=0:   
+                for index in tb_pred_indices:
+
+                    x0 = pred_npy[l]['X'][index]
+                    y0 = pred_npy[l]['Y'][index]
+                    x_vector, y_vector = _xy_vector_generator(x0, y0, wsize)
+                    data['x'].append(x_vector)
+                    data['y'].append(y_vector)
+                    data['ytrue'].append(pred_npy[l]['ytrue'][index].flatten())
+
+                    tb_block_id = np.array(len(pred_npy[l]['ytrue'][index].flatten())*[block_id], dtype=np.int32)
+                    data['block'].append(tb_block_id)
+
+                    tb_cultivar_id = np.array(len(pred_npy[l]['ytrue'][index].flatten())*[cultivar_id], dtype=np.int8)
+                    data['cultivar'].append(tb_cultivar_id)
+
+
+
+                    # Handle predictions dynamically
+                    for key in pred_keys:
+                        flattened_pred = pred_npy[l][key][index].flatten()
+                        data[key].append(flattened_pred)
+
+    empty_dict = {key: None for key in data.keys()}
+    # Convert lists to numpy arrays for consistency
+    for key in data:
+        if data[key]:  # Ensure there's data to concatenate
+            # print(len(data[key]))
+            output = np.concatenate(data[key])
+            empty_dict[key] = output
+            # print(key, output.shape)
+
+    # Create DataFrame from data dictionary
+    OutDF = pd.DataFrame(empty_dict)
+    return OutDF
+
+def _xy_vector_generator(x0, y0, wsize):
+
+    x_vector, y_vector = [], []
+    
+    for i in range(x0, x0+wsize):
+        for j in range(y0, y0+wsize):
+            x_vector.append(i)
+            y_vector.append(j)
+
+    return x_vector, y_vector 
+
+def _load_text_file(file_path):
+    _, file_extension = os.path.splitext(file_path)
+    
+    if file_extension.lower() == '.pdf':
+        # Handle PDF files
+        pdf_loader = PdfReader(open(file_path, "rb"))
+        file_text = ""
+        for page_num in range(len(pdf_loader.pages)):
+            pdf_page = pdf_loader.pages[page_num]
+            if pdf_page.extract_text() is not None:
+                file_text += pdf_page.extract_text()
+        return file_text
+    
+    elif file_extension.lower() == '.txt':
+        # Handle text files
+        with open(file_path, "r", encoding="utf-8") as file:
+            file_text = file.read()
+        return file_text
+    
+    else:
+        raise ValueError("Unsupported file format: " + file_extension)
+
+def extract_keyword_values(text, keywords):
+    values = {}
+    for keyword in keywords:
+        if keyword == 'electrical conductivity':
+            # Specific pattern for electrical conductivity, handling "at" and potential line breaks
+            pattern = rf"{re.escape(keyword)}.*?at\s*([\d\.]+)" #pattern = rf"{re.escape(keyword)}.*?at\s*([\d\.]+)"
+        else:
+            # General pattern for other keywords
+            pattern = rf"\b{re.escape(keyword)}\b.*?([\d\.]+)\s*(?:[a-zA-Z%\/\(\)]*)"
+        
+
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL) #re.search(pattern, text, re.IGNORECASE)
+        
+        # print(f'{keyword}, match: {match}')  # Debugging print statement
+        
+        if match:
+            try:
+                # Try to extract and convert the matched value to a float
+                value = float(match.group(1))  # This captures the number part
+                # print(f'values: {value}')  # Debugging print statement
+                if keyword not in values:
+                    values[keyword] = []
+                values[keyword].append(value)
+            except ValueError:
+                continue  # Ignore if conversion fails
+    return values
+
+def process_texts(dataloader, keywords):
+    all_values = {keyword: [] for keyword in keywords}
+    
+    for sample in dataloader:
+        # text_path = 
+        text = sample['EmbText'][0] #_load_text_file(text_path)
+        # Only process texts longer than 1000 characters
+        if len(text) > 100:
+            keyword_values = extract_keyword_values(text, keywords)
+            for keyword, values in keyword_values.items():
+                all_values[keyword].extend(values)
+    
+    # Compute 10th, 50th, and 90th percentiles for each keyword
+    percentiles = {}
+    for keyword, values in all_values.items():
+        if values:
+            percentiles[keyword] = {
+                '10th': np.percentile(values, 10),
+                '50th': np.percentile(values, 50),
+                '90th': np.percentile(values, 90)
+            }
+        else:
+            percentiles[keyword] = {'10th': None, '50th': None, '90th': None}
+    
+    return percentiles
+
+
+
+
+
+def plot_sensitivity_analysis(exp_name: str, 
+                              keyword: str, values: list):
+    exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name
+    analysis_output_dir = os.path.join(exp_output_dir, 'sensivity')
+    
+    # Load the original dataframe
+    original_df = pd.read_csv(os.path.join(exp_output_dir, exp_name + '_test.csv'))
+    
+    # Load the three sensitivity dataframes for the keyword
+    cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+
+    sens_df_10th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values[0])}.csv"))
+    sens_df_50th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values[1])}.csv"))
+    sens_df_90th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values[2])}.csv"))
+    
+    # Create a list of dataframes for iteration
+    dfs = {
+        "Original": original_df,
+        "10th Percentile": sens_df_10th,
+        "50th Percentile": sens_df_50th,
+        "90th Percentile": sens_df_90th
+    }
+    
+    # Define the bin edges and labels
+    bin_edges = np.arange(0, 71, 7)
+    bin_labels = [f"{i}-{i+7}" for i in bin_edges[:-1]]
+    
+    # Create a figure for the boxplot
+    plt.figure(figsize=(18, 6))  # Wider figure to match horizontal layout
+    
+    # Colors for each boxplot
+    box_colors = ['gray', 'lightblue', 'lightgreen', 'lightcoral']
+    
+    # Iterate through bins
+    for i in range(len(bin_edges) - 1):
+        bin_start, bin_end = bin_edges[i], bin_edges[i + 1]
+        
+        # Collect ypred_w1 values for all dataframes within the bin range based on ytrue
+        ypred_bin_values = []
+        for label, df in dfs.items():
+            bin_data = df[(df['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (df['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1']*HECTARE_TO_ACRE_SCALE
+            ypred_bin_values.append(bin_data)
+        
+        # Plot vertically and shift the positions of boxplots horizontally for each bin
+        x_positions = np.array([i * 4, i * 4 + 1, i * 4 + 2, i * 4 + 3])  # Shifting x-axis for vertical boxplots
+        for j, (ypred, x_pos, color) in enumerate(zip(ypred_bin_values, x_positions, box_colors)):
+            boxplot = plt.boxplot(ypred, vert=True, positions=[x_pos], widths=0.6, patch_artist=True, showfliers=False)
+            
+            # Set box color
+            for patch in boxplot['boxes']:
+                patch.set_facecolor(color)
+
+        if i < len(bin_edges) - 2:
+            plt.axvline(x=(i + 1) * 4 - 0.5, color='gray', linestyle='--', linewidth=1)
+    
+    
+    # Set y-axis limits and labels (Yield)
+    plt.ylim([0, 70])
+    plt.ylabel("Yield (0-70)")
+    
+    # Set x-axis labels and ticks (Bins)
+    x_tick_positions = np.arange(2, len(bin_labels) * 4, 4)  # Adjusted for 10 bins
+    plt.xticks(x_tick_positions, bin_labels)  # Ensure 10 tick positions match 10 labels
+    plt.xlabel("Bins")
+    
+    # Add legend
+    plt.legend([plt.Line2D([0], [0], color=c, lw=4) for c in box_colors], 
+               ['Original', '10th Percentile', '50th Percentile', '90th Percentile'], loc='upper left')
+    
+    # Add title and adjust layout
+    plt.title(f"Sensitivity Analysis for {keyword}")
+    plt.tight_layout()
+    
+    # Show the plot
+    plt.show()
+
+
+
+# def plot_mean_difference(exp_name: str, keywords_dict: dict):
+#     exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name
+#     analysis_output_dir = os.path.join(exp_output_dir, 'sensivity')
+
+#     # Define the bin edges
+#     bin_edges = np.arange(0, 71, 7)
+    
+#     # Create a figure with 1 row and 10 columns (subplots for each bin)
+#     fig, axes = plt.subplots(1, len(bin_edges) - 1, figsize=(20, 5), sharey=True)
+    
+#     # Iterate through bins and create subplots
+#     for i, ax in enumerate(axes):
+#         bin_start, bin_end = bin_edges[i], bin_edges[i + 1]
+        
+#         y_offset = len(keywords_dict)  # For offsetting the y-axis for each keyword
+        
+#         # For each keyword, calculate the means and their differences
+#         for idx, (keyword, value) in enumerate(keywords_dict.items()):
+#             values_list = list(value.values())
+#             original_df = pd.read_csv(os.path.join(exp_output_dir, exp_name + '_test.csv'))
+#             cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+#             sens_df_10th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[0])}.csv"))
+#             sens_df_50th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[1])}.csv"))
+#             sens_df_90th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[2])}.csv"))
+            
+
+
+#             # Calculate means for the current keyword
+#             original_mean = original_df[(original_df['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (original_df['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
+#             mean_10th = sens_df_10th[(sens_df_10th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_10th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
+#             mean_50th = sens_df_50th[(sens_df_50th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_50th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
+#             mean_90th = sens_df_90th[(sens_df_90th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_90th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
+
+#             # Calculate the differences from the original mean
+#             diff_10th = mean_10th - original_mean
+#             diff_50th = mean_50th - original_mean
+#             diff_90th = mean_90th - original_mean
+
+#             # Plot the differences as dot plots
+#             # ax.plot([diff_10th], [y_offset - idx], 'o', color='blue', label='10th Percentile' if i == 0 and idx == 0 else "")  # Dot for 10th percentile
+#             # ax.plot([diff_50th], [y_offset - idx], 'o', color='green', label='50th Percentile' if i == 0 and idx == 0 else "")  # Dot for 50th percentile
+#             # ax.plot([diff_90th], [y_offset - idx], 'o', color='red', label='90th Percentile' if i == 0 and idx == 0 else "")  # Dot for 90th percentile
+#             # Modify these lines to use horizontal bar plots with a shift
+#             bar_width = 0.2  # Set the width of each bar
+#             # Plot bar for 10th Percentile with a horizontal shift
+#             ax.barh(y=[y_offset - idx + bar_width], width=diff_10th, height=bar_width, color='blue', label='10th Percentile' if i == 0 and idx == 0 else "")
+#             # Plot bar for 50th Percentile with a horizontal shift
+#             ax.barh(y=[y_offset - idx], width=diff_50th, height=bar_width, color='green', label='50th Percentile' if i == 0 and idx == 0 else "")
+#             # Plot bar for 90th Percentile with a horizontal shift
+#             ax.barh(y=[y_offset - idx - bar_width], width=diff_90th, height=bar_width, color='red', label='90th Percentile' if i == 0 and idx == 0 else "")
+#             # Add a horizontal dashed line separating keywords
+#             ax.axhline(y=y_offset - idx - 0.5, color='gray', linestyle='--', linewidth=1)
+        
+#         # Set x-axis range from -1 to 1 (centered around original mean)
+#         ax.set_xlim([-1, 1])
+        
+#         # Set title for the bin
+#         ax.set_title(f"Bin {bin_start}-{bin_end}")
+    
+#     # Set common labels and legend
+#     fig.suptitle(f"Mean Differences from Original for Keywords")
+#     fig.text(0.5, 0.04, "Difference from Original Mean", ha="center")
+#     fig.text(0.04, 0.5, "Keywords", va="center", rotation="vertical")
+    
+#     # Add legend
+#     plt.legend(loc="upper right")
+    
+#     # Adjust layout
+#     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+#     # Show the plot
+#     plt.show()
+
+
+def plot_mean_difference(exp_name: str, keywords_dict: dict):
+    exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name
+    analysis_output_dir = os.path.join(exp_output_dir, 'sensivity')
+
+    # Define the bin edges
+    bin_edges = np.arange(0, 71, 7)
+    
+    # Extract keyword names from the dictionary
+    keyword_names = list(keywords_dict.keys())
+    
+    # Create a figure with 1 row and 10 columns (subplots for each bin)
+    fig, axes = plt.subplots(1, len(bin_edges) - 1, figsize=(20, 25), sharey=True)
+    
+    # Iterate through bins and create subplots
+    for i, ax in enumerate(axes):
+        bin_start, bin_end = bin_edges[i], bin_edges[i + 1]
+        
+        y_offset = len(keyword_names)  # For offsetting the y-axis for each keyword
+        
+        # For each keyword, calculate the means and their differences
+        for idx, (keyword, value) in enumerate(keywords_dict.items()):
+            values_list = list(value.values())
+            original_df = pd.read_csv(os.path.join(exp_output_dir, exp_name + '_test.csv'))
+            cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+            sens_df_10th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[0])}.csv"))
+            sens_df_50th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[1])}.csv"))
+            sens_df_90th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[2])}.csv"))
+
+            # Calculate means for the current keyword
+            original_mean = original_df[(original_df['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (original_df['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
+            mean_10th = sens_df_10th[(sens_df_10th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_10th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
+            mean_50th = sens_df_50th[(sens_df_50th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_50th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
+            mean_90th = sens_df_90th[(sens_df_90th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_90th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
+
+            # Calculate the differences from the original mean
+            diff_10th = mean_10th - original_mean
+            diff_50th = mean_50th - original_mean
+            diff_90th = mean_90th - original_mean
+
+            # Plot the differences as bar plots
+            bar_width = 0.2  # Set the width of each bar
+            ax.barh(y=[y_offset - idx + bar_width], width=diff_10th, height=bar_width, color='blue', label='10th Percentile' if i == 0 and idx == 0 else "")
+            ax.barh(y=[y_offset - idx], width=diff_50th, height=bar_width, color='green', label='50th Percentile' if i == 0 and idx == 0 else "")
+            ax.barh(y=[y_offset - idx - bar_width], width=diff_90th, height=bar_width, color='red', label='90th Percentile' if i == 0 and idx == 0 else "")
+            
+            # Add a horizontal dashed line separating keywords
+            ax.axhline(y=y_offset - idx - 0.5, color='gray', linestyle='--', linewidth=1)
+        
+        # Set x-axis range from -5 to 5 (centered around original mean)
+        ax.set_xlim([-1, 1])
+        
+        # Set title for the bin
+        ax.set_title(f"Bin {bin_start}-{bin_end}")
+        
+        # Set the y-axis ticks to show keyword names instead of values
+        ax.set_yticks([y_offset - i for i in range(len(keyword_names))])
+        ax.set_yticklabels(keyword_names, rotation=90)
+    
+    # Set common labels and legend
+    fig.suptitle(f"Mean Differences from Original for Keywords")
+    
+    # Add x-axis label with parentheses legend
+    fig.text(0.5, 0.04, "Difference from Original Mean (Blue: 10th, Green: 50th, Red: 90th Percentile)", ha="center")
+    fig.text(0.04, 0.5, "Keywords", va="center", rotation="vertical")
+    
+    # Add legend
+    plt.legend(loc="upper right")
+    
+    # Adjust layout
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    # Show the plot
+    plt.show()
