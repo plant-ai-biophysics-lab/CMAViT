@@ -2140,7 +2140,7 @@ def plot_sensitivity_analysis(exp_name: str,
 #     plt.show()
 
 
-def plot_mean_difference(exp_name: str, keywords_dict: dict):
+def plot_mean_difference(exp_name: str, keywords_dict: dict, block: int):
     exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name
     analysis_output_dir = os.path.join(exp_output_dir, 'sensivity')
 
@@ -2151,7 +2151,7 @@ def plot_mean_difference(exp_name: str, keywords_dict: dict):
     keyword_names = list(keywords_dict.keys())
     
     # Create a figure with 1 row and 10 columns (subplots for each bin)
-    fig, axes = plt.subplots(1, len(bin_edges) - 1, figsize=(20, 25), sharey=True)
+    fig, axes = plt.subplots(1, len(bin_edges) - 1, figsize=(20, 4), sharey=True)
     
     # Iterate through bins and create subplots
     for i, ax in enumerate(axes):
@@ -2167,6 +2167,10 @@ def plot_mean_difference(exp_name: str, keywords_dict: dict):
             sens_df_10th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[0])}.csv"))
             sens_df_50th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[1])}.csv"))
             sens_df_90th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[2])}.csv"))
+            if block:
+                sens_df_10th = sens_df_10th[sens_df_10th['block'] == block]
+                sens_df_50th = sens_df_50th[sens_df_50th['block'] == block]
+                sens_df_90th = sens_df_90th[sens_df_90th['block'] == block]
 
             # Calculate means for the current keyword
             original_mean = original_df[(original_df['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (original_df['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
@@ -2180,14 +2184,15 @@ def plot_mean_difference(exp_name: str, keywords_dict: dict):
             diff_90th = mean_90th - original_mean
 
             # Plot the differences as bar plots
-            bar_width = 0.2  # Set the width of each bar
+            bar_width = 0.1  # Set the width of each bar
             ax.barh(y=[y_offset - idx + bar_width], width=diff_10th, height=bar_width, color='blue', label='10th Percentile' if i == 0 and idx == 0 else "")
             ax.barh(y=[y_offset - idx], width=diff_50th, height=bar_width, color='green', label='50th Percentile' if i == 0 and idx == 0 else "")
             ax.barh(y=[y_offset - idx - bar_width], width=diff_90th, height=bar_width, color='red', label='90th Percentile' if i == 0 and idx == 0 else "")
             
             # Add a horizontal dashed line separating keywords
             ax.axhline(y=y_offset - idx - 0.5, color='gray', linestyle='--', linewidth=1)
-        
+            ax.axvline(x=0, color='black', linestyle='--', linewidth=1)
+
         # Set x-axis range from -5 to 5 (centered around original mean)
         ax.set_xlim([-1, 1])
         
@@ -2203,7 +2208,7 @@ def plot_mean_difference(exp_name: str, keywords_dict: dict):
     
     # Add x-axis label with parentheses legend
     fig.text(0.5, 0.04, "Difference from Original Mean (Blue: 10th, Green: 50th, Red: 90th Percentile)", ha="center")
-    fig.text(0.04, 0.5, "Keywords", va="center", rotation="vertical")
+    # fig.text(0.04, 0.5, "Keywords", va="center", rotation="vertical")
     
     # Add legend
     plt.legend(loc="upper right")
