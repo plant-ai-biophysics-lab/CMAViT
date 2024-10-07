@@ -12,10 +12,12 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from models import configs
 from src import losses
-# from models.mmst import ClimMgmtAware_ViT
+from models.configs import Configs
+from models.cvt import ClimMgmtAware_ViT
 
 from models.configs import set_seed
 set_seed(1987)
+
 #======================================================================================================================================#
 #====================================================== Training Config ===============================================================#
 #======================================================================================================================================#   
@@ -101,8 +103,7 @@ class ViTYieldEst:
     def train(self, data_loader_training, data_loader_validate, 
               loss: str, 
               epochs: int, 
-              loss_stop_tolerance: int, 
-              cond: str):
+              loss_stop_tolerance: int):
         """
         Trains the model using the provided training and validation data loaders.
 
@@ -126,27 +127,15 @@ class ViTYieldEst:
             self.model.train()
 
             for batch, sample in enumerate(data_loader_training):
-                
-                xtrain = sample['image'].to(device)
-                mettrain = sample['met'].to(device)
-                ytrain_true = sample['mask'][:,:,:,:,0].to(device)
-                embtext_train = sample['EmbText']
-                train_weights = sample['weight'].to(device)
-
-                if cond is True:
-                    yieldzone_train = sample['YZ'].to(device)
-                else:
-                    yieldzone_train = None
-
-                list_ytrain_pred, _ = self.model(img = xtrain, 
-                                                 context = embtext_train, 
-                                                 met = mettrain, 
-                                                 yz = yieldzone_train, 
-                                                 cond = cond) 
+                                
+                list_ytrain_pred, _ = self.model(img = sample['image'].to(device), 
+                                                 context = sample['EmbText'], 
+                                                 met = sample['met'].to(device), 
+                                                 yz = sample['YZ'].to(device)) 
 
                 self.optimizer.zero_grad()
-
-                train_loss = self._calculate_timeseries_loss(ytrain_true, list_ytrain_pred, loss, train_weights)
+                ytrain_true = sample['mask'][:,:,:,:,0].to(device)
+                train_loss = self._calculate_timeseries_loss(ytrain_true, list_ytrain_pred, loss, sample['weight'].to(device))
 
                 train_loss.backward()
 
@@ -158,26 +147,14 @@ class ViTYieldEst:
             with torch.no_grad():
                 val_epoch_loss = 0
                 for batch, sample in enumerate(data_loader_validate):
+                
+                    list_yvalid_pred, _ = self.model(img = sample['image'].to(device), 
+                                                     context = sample['EmbText'], 
+                                                     met = sample['met'].to(device), 
+                                                     yz = sample['YZ'].to(device),)   
                     
-                    xvalid = sample['image'].to(device)
-                    metvalid = sample['met'].to(device)
                     yvalid_true = sample['mask'][:,:,:,:,0].to(device)
-                    embtext_valid = sample['EmbText']
-                    valid_weights = sample['weight'].to(device)
-
-                    if cond is True:
-                        yieldzone_valid = sample['YZ'].to(device)
-                    else:
-                        yieldzone_valid = None
-
-
-                    list_yvalid_pred, _ = self.model(img = xvalid, 
-                                                     context = embtext_valid, 
-                                                     met = metvalid, 
-                                                     yz = yieldzone_valid, 
-                                                     cond = cond)   
-                    
-                    valid_loss = self._calculate_timeseries_loss(yvalid_true, list_yvalid_pred, loss, valid_weights)
+                    valid_loss = self._calculate_timeseries_loss(yvalid_true, list_yvalid_pred, loss, sample['weight'].to(device))
 
                     val_epoch_loss += valid_loss.item()
 
@@ -187,26 +164,28 @@ class ViTYieldEst:
             training_duration_time = (time.time() - training_start_time)        
             print(f'Epoch {epoch+0:03} [{training_duration_time:.3f} (s)]: Train MSE Loss: {train_epoch_loss/len(data_loader_training):.4f} | Val MSE Loss: {val_epoch_loss/len(data_loader_validate):.4f}') 
 
-            checkpoint = {
-            'epoch': epoch + 1,
-            'state_dict': self.model.state_dict(),
-            'optimizer': self.optimizer.state_dict(),
-            'best_val_loss': best_val_loss
-            }
+            # checkpoint = {
+            # 'epoch': epoch + 1,
+            # 'state_dict': self.model.state_dict(),
+            # 'optimizer': self.optimizer.state_dict(),
+            # 'best_val_loss': best_val_loss
+            # }
 
-            self._save_checkpoint(checkpoint, filename= os.path.join(self.checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pth"))
+            # self._save_checkpoint(checkpoint, filename= os.path.join(self.checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pth"))
 
             if (val_epoch_loss/len(data_loader_validate)) < best_val_loss or epoch==0:
                         
                 best_val_loss=(val_epoch_loss/len(data_loader_validate))
                 torch.save(self.model.state_dict(), self.best_model_name)
 
-                self._save_checkpoint(checkpoint, filename = self.best_checkpoint_dir)
+                # self._save_checkpoint(checkpoint, filename = self.best_checkpoint_dir)
 
                 # early_stopping.update(False)
                 print(f'=============================== Best model Saved! Val MSE: {best_val_loss:.4f}')
 
                 status = True
+
+
             else:
 
                 status = False
@@ -219,64 +198,58 @@ class ViTYieldEst:
 
         self._save_loss_df(loss_stats, self.loss_df_name, self.loss_fig_name)
 
-    def predict(self, model, data_loader, category: str, iter: int):
+    def predict(self, model, data_loader, category: str):
 
-        # model = MMST_ViT(config, cond = False).to(device)
+        # model = ClimMgmtAware_ViT(config).to(device)
         model.load_state_dict(torch.load(self.best_model_name))
+
         output_files =[]
-        attn_outs =  None
-        for i in range(iter):
-            with torch.no_grad():
-                for batch, sample in enumerate(data_loader):
-                    x = sample['image'].to(device)
-                    met = sample['met'].to(device)
-                    y = sample['mask'].detach().cpu().numpy()
-                    block_id = sample['block']
-                    block_cultivar_id = sample['cultivar']
-                    block_x_coords = sample['X']
-                    block_y_coords = sample['Y']
-                    embmatrix = sample['EmbText']
-                    # yieldzone = sample['YZ'].to(device)
-            
-                    pred_list, text_attn_list = self.model(img = x, 
-                                            context = embmatrix, 
-                                            met = met, 
-                                            yz = None, 
-                                            cond = False) # text_attn_list
+        with torch.no_grad():
+            for batch, sample in enumerate(data_loader):
 
-                    if category == 'train':
-                        np.save(os.path.join(self.exp_output_dir, f'attn_scores/train_attn_scores_{batch}.npy'), text_attn_list[0].detach().cpu().numpy())
+                pred_list, text_attn_list = self.model(img = sample['image'].to(device), 
+                                        context =  sample['EmbText'], 
+                                        met = sample['met'].to(device), 
+                                        yz = sample['YZ'].to(device)) 
 
-                    #     # np.save(f'/data2/hkaman/Projects/ViT/EXPs/July/attnscores/train_attn_scores_{batch}.npy', text_attn_list[0].detach().cpu().numpy())
+                # if category == 'train':
+                #     np.save(os.path.join(self.exp_output_dir, f'attn_scores/train_attn_scores_{batch}.npy'), text_attn_list[0].detach().cpu().numpy())
 
+                #     # np.save(f'/data2/hkaman/Projects/ViT/EXPs/July/attnscores/train_attn_scores_{batch}.npy', text_attn_list[0].detach().cpu().numpy())
 
-                    this_batch = {"block": block_id, 
-                                        "cultivar": block_cultivar_id, 
-                                        "X": block_x_coords, "Y": block_y_coords,
-                                        "ytrue": y}
+                block_id = sample['block']
+                block_cultivar_id = sample['cultivar']
+                block_x_coords = sample['X']
+                block_y_coords = sample['Y']
+                this_batch = {"block": block_id, 
+                                    "cultivar": block_cultivar_id, 
+                                    "X": block_x_coords, "Y": block_y_coords,
+                                    "ytrue": sample['mask'].detach().cpu().numpy()}
 
-                    # Dynamically add predictions to the dictionary
-                    for i, pred in enumerate(pred_list):
+                for i, pred in enumerate(pred_list):
+                    if len(pred_list) == 1:
+                        key = "ypred_w15"  
+                    else:
                         key = f"ypred_w{i+1}"  # Creates keys like ypred_w1, ypred_w2, ..., ypred_wN
-                        this_batch[key] = pred.detach().cpu().numpy()
+                    this_batch[key] = pred.detach().cpu().numpy()
 
-                    output_files.append(this_batch)
+                output_files.append(this_batch)
 
-                modified_df = self._return_modified_pred_df(output_files, None, 16)
-                if category == 'train':
-                    name_tr = self.train_df_name[:-4]  + '.csv'
-                    modified_df.to_csv(name_tr)
-                    print("train inference is done!")
+            modified_df = self._return_modified_pred_df(output_files, None, 16)
+            if category == 'train':
+                name_tr = self.train_df_name[:-4]  + '.csv'
+                modified_df.to_csv(name_tr)
+                print("train inference is done!")
 
-                elif category == 'valid':
-                    name_val = self.valid_df_name[:-4]  + '.csv'
-                    modified_df.to_csv(name_val)
-                    print("validation inference is done!")
-                    
-                elif category == 'test':
-                    name_te = self.test_df_name[:-4] + '.csv'
-                    modified_df.to_csv(name_te)
-                    print("test inference is done!")
+            elif category == 'valid':
+                name_val = self.valid_df_name[:-4]  + '.csv'
+                modified_df.to_csv(name_val)
+                print("validation inference is done!")
+                
+            elif category == 'test':
+                name_te = self.test_df_name[:-4] + '.csv'
+                modified_df.to_csv(name_te)
+                print("test inference is done!")
 
     def _return_modified_pred_df(self, pred_npy, blocks_list, wsize=None):
         if blocks_list is None: 

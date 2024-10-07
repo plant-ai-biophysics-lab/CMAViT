@@ -34,7 +34,7 @@ def cost_sensitive_weight_sampler(df):
         get_patch_count = dict_[patch_cultivar][0][patch_mean]
         get_cultivar_sum = dict_[patch_cultivar][1]
         row_weight = get_patch_count / get_cultivar_sum
-        row_weight = 1 / (get_patch_count / get_patch_count) if get_patch_count != 0 else 0
+        # row_weight = 1 / (get_patch_count / get_patch_count) if get_patch_count != 0 else 0
         weight.append(row_weight)
         
     weight = np.array(weight)
@@ -72,6 +72,76 @@ def cost_sensitive_weight_sampler2(df):
     NormWeights = df['weight'] / total_weight_sum
     
     return NormWeights
+
+def cost_sensitive_weight_sampler_3(df):
+    bins = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
+
+    # Group by cultivar for cultivar-specific weights
+    Groups = df.groupby(by=["cultivar"])
+    dict_ = {}
+    
+    for cultivar, frame in Groups:
+        count_list = frame['patch_mean'].value_counts(bins=bins, sort=False)
+        count_sum = np.sum(count_list)
+        dict_[cultivar[0]] = count_list, count_sum
+
+    weight = [] 
+    for idx, row in df.iterrows():
+        patch_cultivar = row['cultivar']
+        patch_mean = row['patch_mean']
+        
+        # Get count for the patch mean and total for the cultivar
+        get_label_count = dict_[patch_cultivar][0][patch_mean]
+        get_total_sum = dict_[patch_cultivar][1]
+        
+        # Apply logarithmic scaling to avoid extreme values
+        row_weight = np.log(1 + get_total_sum / get_label_count) if get_label_count != 0 else 0
+        weight.append(row_weight)
+
+    # Normalize weights across all samples
+    weight = np.array(weight)
+    df['weight'] = weight
+    total_weight_sum = df['weight'].sum()
+    NormWeights = df['weight'] / total_weight_sum
+    
+    return NormWeights
+
+def cost_sensitive_weight_sampler_optimized(df):
+    bins = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
+    
+    # Group by "cultivar" if needed, otherwise use the entire dataframe
+    Groups = df.groupby(by=["cultivar"])
+    
+    dict_ = {}
+    for cultivar, frame in Groups:
+        count_list = frame['patch_mean'].value_counts(bins=bins, sort=False)
+        count_sum = np.sum(count_list)
+        dict_[cultivar[0]] = count_list, count_sum
+
+    weight = [] 
+    for idx, row in df.iterrows():
+        patch_cultivar = row['cultivar']
+        patch_mean = row['patch_mean']
+        
+        # Fetch the patch count and sum for the corresponding cultivar
+        get_patch_count = dict_[patch_cultivar][0][patch_mean]
+        get_cultivar_sum = dict_[patch_cultivar][1]
+        
+        # Safely calculate row weight with logarithmic scaling
+        if get_patch_count > 0:
+            row_weight = np.log(1 + get_cultivar_sum / get_patch_count)
+        else:
+            row_weight = 0  # Handle the case where the count is zero
+        
+        weight.append(row_weight)
+    
+    weight = np.array(weight)
+    df['weight'] = weight
+    
+    # Normalize the weights for each cultivar to sum to 1
+    df['NormWeights'] = df.groupby('cultivar')['weight'].transform(lambda x: x / x.sum())
+
+    return df['NormWeights']
 
 
 def get_dataloaders(
@@ -157,14 +227,14 @@ def get_dataloaders(
         if resmapling_status: 
             print(f"resampling is {resmapling_status}, The dataloader is processing cost-sensitive resampling!")
 
-        train_weights = cost_sensitive_weight_sampler2(train_csv) #train_csv['NormWeight'].to_numpy() 
+        train_weights = train_csv['NormWeight'].to_numpy() #
         train_weights = torch.DoubleTensor(train_weights)
         train_sampler = torch.utils.data.sampler.WeightedRandomSampler(
         train_weights, 
         len(train_weights), 
         replacement=True)    
 
-        val_weights   = cost_sensitive_weight_sampler2(valid_csv) #valid_csv['NormWeight'].to_numpy() 
+        val_weights   = valid_csv['NormWeight'].to_numpy()
         val_weights   = torch.DoubleTensor(val_weights)
         val_sampler   = torch.utils.data.sampler.WeightedRandomSampler(
         val_weights, 
@@ -558,7 +628,6 @@ class DataCreator(object):
 
         return timeseries  
 
-
 def sns_inference_dataloader(batch_size: int, 
                          exp_name: str, 
                          keyword: str, 
@@ -583,7 +652,6 @@ def sns_inference_dataloader(batch_size: int,
                                                 shuffle=False, num_workers=8) 
     
     return data_loader_test
-
 
 class InfDataCreator(object):
     def __init__(self, npy_dir, csv_dir,  

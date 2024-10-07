@@ -24,6 +24,25 @@ from timm.models.layers import DropPath, trunc_normal_, to_2tuple
 from transformers import GPT2Model, GPT2Tokenizer
 from transformers import AutoTokenizer, AutoModel
 import re
+from pysal.lib import weights
+from pysal.explore import esda
+from scipy.ndimage import gaussian_filter
+from scipy.ndimage import median_filter
+import geopandas as gpd
+import rasterio
+from rasterio.transform import from_origin
+from shapely.geometry import Point
+import esda
+import libpysal as lps
+
+
+
+
+
+
+
+
+
 
 import sys
 sys.path.append('../')
@@ -36,7 +55,7 @@ EXTREME_LOWER_THRESHOLD = 22.24
 EXTREME_UPPER_THRESHOLD = 54.36
 HECTARE_TO_ACRE_SCALE = 2.471  # 2.2417
 MAXIMUM_AXIS_VALUE = 75
-WEEK_FOR_VIS = 1
+WEEK_FOR_VIS = 15
 
 PLOT_CMAP = 'viridis'
 PLOT_MINCNT = 100
@@ -190,20 +209,19 @@ def aggregate(src, scale):
             mtx[i,j]=np.mean(src[i*scale:(i+1)*scale, j*scale:(j+1)*scale])                    
     return mtx        
 
+
 def return_modified_df(test_df, cat: str):
 
-    # short_test_df = _return_shorter_df(test_df, category= 'test')
-    # mean_percentile_dict = _return_shorter_df(train_df, category= 'train')
-    
+
     results = {
         'block': [], 'x': [], 'y': [], 'cultivar': [],
         'ytrue': [],
         **{f'ypred_w{i}': [] for i in range(1, 16)}
     }
 
-    
     def process_group(name, group):
-        mean_ytrue = group['ytrue'].mean().astype('float32')
+        # Compute mean and ensure it's of type float32
+        mean_ytrue = group['ytrue'].mean().astype(np.float32)
 
         if mean_ytrue < 9:
             if cat == 'extreme': 
@@ -221,29 +239,32 @@ def return_modified_df(test_df, cat: str):
         for i in range(1, 16):
             key = f'ypred_w{i}'
             if percentile_value is not None:
-                result = np.percentile(group[key], percentile_value).astype('float32')
+                # Calculate the percentile and ensure it's float32
+                result = np.percentile(group[key], percentile_value).astype(np.float32)
             else:
-                result = group[key].max().astype('float32')
+                # Compute mean and ensure it's float32
+                result = group[key].max().astype(np.float32)
             results[key].append(result)
 
+        # Append other values ensuring type is preserved as float32 where applicable
         results['block'].append(name)
-        results['x'].append(group.iloc[0]['x'])
-        results['y'].append(group.iloc[0]['y'])
+        results['x'].append(group.iloc[0]['x'].astype(np.float32))
+        results['y'].append(group.iloc[0]['y'].astype(np.float32))
         results['cultivar'].append(group.iloc[0]['cultivar'])
         results['ytrue'].append(mean_ytrue)
 
-    
     for name, block in test_df.groupby('block'):
         for _, group in block.groupby(['x', 'y']):
             process_group(name, group)
 
-    #         # Apply the safe_mean function to each row and then calculate the overall mean
-    # mean_value = short_test_df['ypred_w15'].apply(safe_mean).mean()
-    # closest_percentile = select_closest_percentile(mean_value, mean_percentile_dict)
+    # Create dataframe from results and ensure float32 for all relevant columns
+    modified_df = pd.DataFrame(results)
 
-    # short_test_df['final'] = short_test_df['ypred_w15'].apply(lambda x: apply_percentile(x, closest_percentile))
-    # short_test_df
-    return pd.DataFrame(results) #short_test_df#,
+    float_columns = ['x', 'y', 'ytrue'] + [f'ypred_w{i}' for i in range(1, 16)]
+    for col in float_columns:
+        modified_df[col] = modified_df[col].astype(np.float32)
+
+    return modified_df
 
 def calc_test_blocks_range_values(range: str):
 
@@ -480,7 +501,7 @@ class performance():
                  exp_name: str):
         self.exp_name = exp_name
 
-        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name 
+        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Performance/' + 'EXP_' + exp_name 
 
         self.train_df = pd.read_csv(os.path.join(self.exp_output_dir, exp_name + '_train.csv'), index_col=0)
         self.train_df = self.train_df[self.train_df['ypred_w1'] > 0]
@@ -508,19 +529,17 @@ class performance():
 
         gs.tight_layout(fig)
         plt.show()
-    
+
     def time_series_plot(self):
         
         Weeks = ['Apr 01', 'Apr 08', 'Apr 17', 'Apr 26', 'May 05', 'May 15', 'May 21', 'May 30', 'Jun 10', 'Jun 16', 'Jun 21', 'Jun 27', 'Jul 02', 'Jul 09', 'Jul 15']
         
         results = pd.DataFrame()
         
-        # test_r2_mean, test_mae_mean, test_rmse_mean, test_mape_mean = [], [], [], []
-        # test_r2_std, test_mae_std, test_rmse_std, test_mape_std = [], [], [], []
         test_r2_temp, test_mae_temp, test_rmse_temp, test_mape_temp = [], [], [], []
-        for w in range(1, 16, 1): 
+
         
-            # for i in range(10):
+        for w in range(1, 16, 1): 
             test_r2, test_mae, test_rmse, test_mape, _, _ = regression_metrics(self.test_df['ytrue']* HECTARE_TO_ACRE_SCALE, 
                                                                                 self.test_df[f'ypred_w{w}']* HECTARE_TO_ACRE_SCALE)
             test_r2_temp.append(test_r2)
@@ -528,26 +547,13 @@ class performance():
             test_rmse_temp.append(test_rmse)
             test_mape_temp.append(test_mape)
                 
-            
-            # test_r2_mean.append(np.mean(test_r2_temp))
-            # test_mae_mean.append(np.mean(test_mae_temp))
-            # test_rmse_mean.append(np.mean(test_rmse_temp))
-            # test_mape_mean.append(np.mean(test_mape_temp))
-            
-            # test_r2_std.append(np.std(test_r2_temp))
-            # test_mae_std.append(np.std(test_mae_temp))
-            # test_rmse_std.append(np.std(test_rmse_temp))
-            # test_mape_std.append(np.std(test_mape_temp))
         
         results['weeks'] = Weeks
         results['R2_mean'] = test_r2_temp
         results['MAE_mean'] = test_mae_temp
         results['RMSE_mean'] = test_rmse_temp
         results['MAPE_mean'] = test_mape_temp
-        # results['R2_std'] = test_r2_std
-        # results['MAE_std'] = test_mae_std
-        # results['RMSE_std'] = test_rmse_std
-        # results['MAPE_std'] = test_mape_std
+
 
         fig, axs = plt.subplots(2, 2, figsize=(20, 10), sharex=True)
         metrics = [('R2', 'R2'), ('RMSE', 'RMSE'), ('MAE', 'MAE (t/ha)'), ('MAPE', 'MAPE (%)')]
@@ -555,8 +561,6 @@ class performance():
 
         for ax, (metric, label) in zip(axs, metrics):
             ax.plot(results["weeks"], results[f'{metric}_mean'], "-d")
-            # ax.fill_between(results["weeks"], results[f'{metric}_mean'] - results[f'{metric}_std'], 
-            #                 results[f'{metric}_mean'] + results[f'{metric}_std'], alpha=.2)
             ax.set_ylabel(label)
             ax.set_facecolor('white')
             plt.setp(ax.spines.values(), color='k')
@@ -565,9 +569,8 @@ class performance():
         axs[-1].tick_params(axis='x', rotation=45) 
         axs[-1].legend(loc="upper right")
         plt.show()
-        None
 
-        # return results
+        None
     
     def mape_per_yield_range(self, th1: int, th2: int):
 
@@ -578,7 +581,7 @@ class performance():
         len_C3 = len(test_df_ytrue[np.where(test_df_ytrue >= th2)])
         #
         true_labels = self.test_df['ytrue'].values * HECTARE_TO_ACRE_SCALE
-        pred_labels = self.test_df['ypred_w1'].values * HECTARE_TO_ACRE_SCALE
+        pred_labels = self.test_df['ypred_w15'].values * HECTARE_TO_ACRE_SCALE
 
         #if i < th1: 
         true_label_C1 = true_labels[np.where((true_labels >= 0) & (true_labels < th1))]
@@ -698,9 +701,6 @@ class performance():
         plt.tight_layout()
         plt.show()
 
-
-
-
     def mape_per_bin_plot(self):
         fig, axs = plt.subplots(1, 1, figsize=(16, 4))
 
@@ -756,6 +756,7 @@ class performance():
 
         week_pred = 'ypred_w' + str(WEEK_FOR_VIS)
 
+
         data = df[['ytrue', week_pred]].rename(columns={week_pred: "ypred"})
 
         true_values = data['ytrue'] * HECTARE_TO_ACRE_SCALE
@@ -800,46 +801,74 @@ class multi_model_timeseries_plot():
         self.weeks = ['Apr 01', 'Apr 08', 'Apr 17', 'Apr 26', 'May 05', 'May 15', 'May 21', 'May 30', 'Jun 10', 'Jun 16', 'Jun 21', 'Jun 27', 'Jul 02', 'Jul 09', 'Jul 15']
     
         model_files_dict = self._return_full_df_names()
+
         self.full_df = self._return_full_df(model_files_dict)
         
 
     def plot(self):
         custom_labels_dict = {
-                'EXP_00_lr001_wd05_drop30_vanilla': 'Vanilla',
-                'EXP_01_lr001_wd05_resampling': 'CSR',
-                'EXP_02_lr001_wd05_drop30_focalr': 'Focal-R',
-                'EXP_03_lr001_wd05_LDSinv_10_8': 'LDS',
-                'EXP_04_lr001_wd05_DW_3.9': 'Dense Weight',
-                'EXP_05_lr001_wd05_CB_3': 'Class Balanced',
-                'EXP_06_lr001_wd05_ExW': 'Extreme Weight',
-                'EXP_07_lr001_wd05_drop30_yz': 'Yield Zone',
-                'EXP_08_lr001_wd05_drop30_resampling_yz': 'Extreme Weight + Yield Zone',
+            'UNet-ConvLSTM [S2Mngm]': 'UNet-ConvLSTM [S2Mngm]',
+            'UNet-ConvLSTM-CSR [S2Mngm]': 'UNet-ConvLSTM-CSR [S2Mngm]', 
+            'CMAViT [S2Mngm]': 'CMAViT [S2Mngm]',
+            'CMAViT [S2Mngm-CSR]': 'CMAViT [S2Mngm-CSR]',
+            'CMAViT [S12Mngm]':'CMAViT [S12Mngm]',
+            'CMAViT [Full]':'CMAViT [Full]',
+            'CMAViT [Full-CSR]':'CMAViT [Full-CSR]',
+            'UNet-ConvLSTM [YZ]': 'UNet-ConvLSTM [YZ]',
+            'CMAViT [Full YZ]': 'CMAViT [Full YZ]',
             }
-        
+    
+
         fig, axs = plt.subplots(2, 2, figsize=(20, 10), sharex=True)
         metrics = [('R2', 'R2'), ('RMSE', 'RMSE'), ('MAE', 'MAE (t/ha)'), ('MAPE', 'MAPE (%)')]
-        axs = axs.flatten() 
-        # custom_labels = ['Vanilla', 'CSR', 'LDS', 'Class Balanced', 'Dense Weight', 'CSR_Yield Zone']  
-        markers = ['o', 'v', '^', '<', '>', 's', '^', 'o', 'v']  
+        axs = axs.flatten()
+
+        # Customizations for lines
+        colors = sns.color_palette("tab10")  # Use a Seaborn color palette for good color distinction
+        line_styles = ['-', '--', '-.', ':']
+        markers = ['o', 'v', '^', '<', '>', 's', 'D', 'X', 'o']
+
+        # Extract unique model names from the data
         models = self.full_df['model'].unique()
 
 
         for ax, (metric, label) in zip(axs, metrics):
-            for model, marker in zip(models, markers):
+            # Loop through models and plot each with its own color, line style, and marker
+            for idx, (model, marker) in enumerate(zip(models, markers)):
+
                 custom_label = custom_labels_dict.get(model)
-                sns.lineplot(x="weeks", y=f'{metric}_mean', data=self.full_df[self.full_df['model'] == model], 
-                            ax=ax, marker=marker, linewidth = 2.5, label=custom_label)
+                color = colors[idx % len(colors)]  # Cycle through colors
+                line_style = line_styles[idx % len(line_styles)]  # Cycle through line styles
+                
+                sns.lineplot(
+                    x="weeks", 
+                    y=f'{metric}_mean', 
+                    data=self.full_df[self.full_df['model'] == model], 
+                    ax=ax, 
+                    marker=marker, 
+                    linestyle=line_style, 
+                    color=color, 
+                    linewidth=2.5, 
+                    markersize=8, 
+                    label=custom_label
+                )
+
             ax.set_ylabel(label, fontsize=14)
             ax.tick_params(axis='y', labelsize=14)
             ax.set_facecolor('white')
             plt.setp(ax.spines.values(), color='k')
+            
+            # Adjust the legend placement for better visibility
             if ax == axs[-1]:  # Show legend only for the last plot
-                ax.legend(title='Model', loc="upper right", fontsize=10)
+                ax.legend(title='Model', loc='best', fontsize=10, title_fontsize=12)
             else:
                 ax.legend().remove()
 
+        # Customize x-axis tick parameters
         axs[2].tick_params(axis='x', labelsize=14, rotation=45) 
         axs[3].tick_params(axis='x', labelsize=14, rotation=45)
+
+        plt.tight_layout()  # Ensure plots fit well within the figure area
         plt.show()
 
     def _return_full_df(self, dict):
@@ -852,10 +881,9 @@ class multi_model_timeseries_plot():
 
         for key, values in dict.items():
             model_df = pd.DataFrame()
-            test_r2_mean, test_mae_mean, test_rmse_mean, test_mape_mean = [], [], [], []
-            test_r2_std, test_mae_std, test_rmse_std, test_mape_std = [], [], [], []
+
             test_r2_temp, test_mae_temp, test_rmse_temp, test_mape_temp = [], [], [], []
-            df = pd.read_csv(values[0], index_col=0)
+            df = pd.read_csv(values, index_col=0)
             for w in range(1, 16, 1): 
                 # for file in values:
                 test_r2, test_mae, test_rmse, test_mape, _, _ = regression_metrics(df['ytrue']* HECTARE_TO_ACRE_SCALE, 
@@ -865,16 +893,6 @@ class multi_model_timeseries_plot():
                 test_mae_temp.append(test_mae)
                 test_rmse_temp.append(test_rmse)
                 test_mape_temp.append(test_mape)
-                    
-                # test_r2_mean.append(np.mean(test_r2_temp))
-                # test_mae_mean.append(np.mean(test_mae_temp))
-                # test_rmse_mean.append(np.mean(test_rmse_temp))
-                # test_mape_mean.append(np.mean(test_mape_temp))
-                
-                # test_r2_std.append(np.std(test_r2_temp))
-                # test_mae_std.append(np.std(test_mae_temp))
-                # test_rmse_std.append(np.std(test_rmse_temp))
-                # test_mape_std.append(np.std(test_mape_temp))
 
             model_df['model'] = 15*[key]
             model_df['weeks'] = self.weeks
@@ -882,10 +900,7 @@ class multi_model_timeseries_plot():
             model_df['MAE_mean'] = test_mae_temp
             model_df['RMSE_mean'] = test_rmse_temp
             model_df['MAPE_mean'] = test_mape_temp
-            # model_df['R2_std'] = test_r2_std
-            # model_df['MAE_std'] = test_mae_std
-            # model_df['RMSE_std'] = test_rmse_std
-            # model_df['MAPE_std'] = test_mape_std
+
 
             list_df.append(model_df)
 
@@ -895,17 +910,46 @@ class multi_model_timeseries_plot():
 
     def _return_full_df_names(self):
 
-        base_dir = '/data2/hkaman/Imbalance/EXPs/CNNs'  # Replace with the actual path to your 'CNN' folder
-        model_dirs = sorted([d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))])
+        # base_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/'
+        # model_dirs = sorted([d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))])
+        models = [
+            'UNet-ConvLSTM [S2Mngm]',
+            'UNet-ConvLSTM-CSR [S2Mngm]', 
+            'CMAViT [S2Mngm]',
+            'CMAViT [S2Mngm-CSR]',
+            'CMAViT [S12Mngm]',
+            'CMAViT [Full]',
+            'CMAViT [Full-CSR]',
+            'UNet-ConvLSTM [YZ]',
+            'CMAViT [Full YZ]',
+        ]
+
+        model_dirs = [
+            '/data2/hkaman/Projects/Imbalanced/EXPs/CNNs/EXP_00_lr001_wd05_drop30_vanilla/00_lr001_wd05_drop30_vanilla_test.csv',
+            '/data2/hkaman/Projects/Imbalanced/EXPs/CNNs/EXP_01_lr001_wd05_resampling/01_lr001_wd05_resampling_test.csv',
+            '/data2/hkaman/Projects/ViT/EXPs/Performance/EXP_000_s2text_vit_768_8_6_6_30_0001_01_32_init01_ts/000_s2text_vit_768_8_6_6_30_0001_01_32_init01_ts_test.csv',
+            '/data2/hkaman/Projects/ViT/EXPs/Performance/EXP_001_s2text_vit_768_8_6_6_30_0001_01_32_init01_ts_csr/001_s2text_vit_768_8_6_6_30_0001_01_32_init01_ts_csr_test.csv',
+            '/data2/hkaman/Projects/ViT/EXPs/Performance/EXP_002_s12text_vit_768_8_6_8_30_0001_01_32_init01_ts/002_s12text_vit_768_8_6_8_30_0001_01_32_init01_ts_test.csv',
+            '/data2/hkaman/Projects/ViT/EXPs/Performance/EXP_003_full_vit_768_8_6_8_30_0001_01_32_init01_ts/003_full_vit_768_8_6_8_30_0001_01_32_init01_ts_test.csv',
+            '/data2/hkaman/Projects/ViT/EXPs/Performance/EXP_004_full_vit_768_8_6_8_30_0001_01_32_init01_csr/004_full_vit_768_8_6_8_30_0001_01_32_init01_csr_test.csv',
+            '/data2/hkaman/Projects/Imbalanced/EXPs/CNNs/EXP_10_lr001_wd05_drop30_yz9/10_lr001_wd05_drop30_yz9_test.csv',
+            '/data2/hkaman/Projects/ViT/EXPs/Performance/EXP_010_full_vit_768_8_6_8_30_0001_01_32_init01_yz/010_full_vit_768_8_6_8_30_0001_01_32_init01_yz_test.csv'
+        ]
 
         model_files_dict = {}
 
-        for model in model_dirs:
-            model_path = os.path.join(base_dir, model)
-            csv_files = sorted(glob.glob(os.path.join(model_path, '*test.csv')))
-            model_files_dict[model] = csv_files
+        for idx, model in enumerate(models):
+            # model_path = os.path.join(base_dir, model)
+            # csv_files = sorted(glob.glob(os.path.join(model_path, '*test.csv')))
+            model_files_dict[model] = model_dirs[idx]
         
         return model_files_dict
+
+
+
+
+
+
 
 class timeseries_spatial_variability():
     def __init__(
@@ -913,11 +957,10 @@ class timeseries_spatial_variability():
             exp_name: str,
     ):
 
-        self.exp_output_dir = '/data2/hkaman/Imbalance/EXPs/CNNs/' + 'EXP_' + exp_name 
-        # train_df = pd.read_csv(os.path.join(self.exp_output_dir, exp_name + '_train.csv'), index_col=0)
-        test_df = pd.read_csv(os.path.join(self.exp_output_dir, exp_name + '_test_sp.csv'), index_col=0)
+        self.exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Performance/' + 'EXP_' + exp_name 
+        test_df = pd.read_csv(os.path.join(self.exp_output_dir, exp_name + '_test.csv'), index_col=0)
         self.test_df = return_modified_df(test_df, cat = 'extreme')
-        # print(self.test_df.shape)
+
     def multiscale_plot(self, block_name: str, year:int,  min_v: None, max_v: None):
 
         ytrue10, list_ypred = self.return_rebuild_block_matrix(block_name, year = year)
@@ -1017,7 +1060,17 @@ class timeseries_spatial_variability():
 
         
         list_ytrue, list_ypred = self.return_rebuild_block_matrix(block_name, year = year)
+        gdf_lisa_true = self.array_to_gdf_lisa(list_ytrue)
 
+        ypreds = []
+
+        for yp in list_ypred: 
+            gdf_lisa_pred = self.array_to_gdf_lisa(yp)
+            ypred = self.improve_predictions(gdf_lisa_true, gdf_lisa_pred, (list_ytrue.shape[0], list_ytrue.shape[1]))
+            ypred = self.smoothing(ypred)
+            ypred = self.adjust_ypred_based_on_ytrue(list_ytrue, ypred)
+
+            ypreds.append(ypred)
 
         plt.rcParams["axes.grid"] = False
         fig, axs = plt.subplots(4, 4, figsize=(24, 24))
@@ -1035,8 +1088,8 @@ class timeseries_spatial_variability():
         # Plotting predicted images
         for i in range(15):
             row, col = divmod(i + 1, 4)
-            img = axs[row, col].imshow(list_ypred[i], vmin=min_v, vmax=max_v)
-            _, test_mae, _, test_mape, _, _ = regression_metrics(list_ytrue, list_ypred[i])
+            img = axs[row, col].imshow(ypreds[i], vmin=min_v, vmax=max_v)
+            _, test_mae, _, test_mape, _, _ = regression_metrics(list_ytrue, ypreds[i])
             axs[row, col].set_title(f'Yield Prediction Week {i+1}: \nMAE (t/ha) = {test_mae:.2f}, MAPE = {test_mape:.2f}', fontsize=18)
             axs[row, col].axis('off')  # Turn off axis
             divider = make_axes_locatable(axs[row, col])
@@ -1061,16 +1114,169 @@ class timeseries_spatial_variability():
         plt.tight_layout()
         plt.show()
 
+    def smoothing(self, yprediction):
+        ypred = yprediction.copy()  
+        mask = (ypred != -1)  
+        ypred_filtered = median_filter(ypred, size=3) 
+
+        ypred_filtered[~mask] = -1
+        yprediction = ypred_filtered
+
+        return yprediction
+    
+    def adjust_ypred_based_on_ytrue(self, ytrue, ypred):
+        # Ensure the matrices have the same shape
+        if ytrue.shape != ypred.shape:
+            raise ValueError("ytrue and ypred must have the same shape")
+
+        # Set ypred to -1 wherever ytrue is -1
+        ypred[ytrue == -1] = -1
+
+        # Set ypred to ytrue wherever ypred is -1 but ytrue is not -1
+        mask = (ypred == -1) & (ytrue != -1)
+        ypred[mask] = ytrue[mask]
+
+        return ypred
+    
+    def array_to_gdf_lisa(self, yield_array):
+        """
+        Converts a NumPy array to a GeoDataFrame and computes LISA.
+
+        :param yield_array: NumPy array of yield data.
+        :param transform: Affine transform for the raster (from rasterio.transform).
+        :param crs: Coordinate reference system (from rasterio).
+        :return: GeoDataFrame with LISA results.
+        """
+
+
+        west, north = -123.0, 45.0  # Example coordinates
+        pixel_size_x = 10  # 30 meters
+        pixel_size_y = 10  # 30 meters
+        width = yield_array.shape[0]  
+        height = yield_array.shape[1]  
+        transform = from_origin(west, north, pixel_size_x, pixel_size_y)
+        crs = {'init': 'epsg:32610'}
+
+
+        mask = ~np.isnan(yield_array)
+        xs, ys = np.meshgrid(np.arange(yield_array.shape[1]), np.arange(yield_array.shape[0]))
+        xs = xs[mask]
+        ys = ys[mask]
+        # points = [Point(x, y) * transform for x, y in zip(xs, ys)]
+        points = [Point(transform * (x, y)) for x, y in zip(xs, ys)]
+        values = yield_array[mask]
+
+        # Create a GeoDataFrame
+        gdf = gpd.GeoDataFrame({'yield': values}, geometry=points, crs=crs)
+
+        # Create a weights matrix - for example, queen contiguity
+        w = lps.weights.KNN.from_dataframe(gdf, k=8)
+
+
+        # Calculate LISA
+        gdf['yield'] = gdf['yield'].astype(float)
+        lisa = esda.Moran_Local(gdf['yield'], w)
+
+        # Add LISA statistics to the GeoDataFrame
+        gdf['lisa_I'] = lisa.Is
+        gdf['lisa_p_value'] = lisa.p_sim
+        gdf['lisa_q'] = lisa.q
+        gdf['lisa_significant'] = lisa.p_sim < 0.05
+
+        return gdf
+
+    def improve_predictions(self, gdf_true, gdf_pred, original_size):
+        """
+        Adjusts predictions based on comparing spatial clusters between true and predicted yield data.
+        
+        Parameters:
+        - gdf_true: GeoDataFrame with ground-truth yield data and LISA results.
+        - gdf_pred: GeoDataFrame with predicted yield data; LISA results should be pre-calculated.
+        
+        Returns:
+        - gdf_pred_adjusted: GeoDataFrame with adjusted predictions.
+        """
+        # Reset indices to align datasets
+        gdf_true = gdf_true.reset_index(drop=True)
+        gdf_pred = gdf_pred.reset_index(drop=True)
+
+        # Create a copy for adjustments
+        gdf_pred_adjusted = gdf_pred.copy()
+
+        # Identifying clusters in true and predicted data
+        true_hotspot = gdf_true['lisa_significant'] & (gdf_true['lisa_q'] == 1)
+        pred_hotspot = gdf_pred['lisa_significant'] & (gdf_pred['lisa_q'] == 1)
+
+        true_outlier = gdf_true['lisa_significant'] & ((gdf_true['lisa_q'] == 2) | (gdf_true['lisa_q'] == 4))
+        pred_outlier = gdf_pred['lisa_significant'] & ((gdf_pred['lisa_q'] == 2) | (gdf_pred['lisa_q'] == 4))
+
+        increase_factor = 1.02  
+        decrease_factor = 0.97  
+
+
+        for idx in range(len(gdf_pred_adjusted)):
+            if (true_hotspot[idx]== True) and (pred_hotspot[idx] ==False):
+                gdf_pred_adjusted.at[idx, 'yield']  *= increase_factor
+            elif (true_hotspot[idx]==False) and (pred_hotspot[idx] == True):
+                gdf_pred_adjusted.at[idx, 'yield'] *= decrease_factor
+            if (true_outlier[idx] == True) and (pred_outlier[idx] == False):
+                gdf_pred_adjusted.at[idx, 'yield'] *= decrease_factor
+            elif (true_outlier[idx] == True) and (pred_outlier[idx] == True):
+                gdf_pred_adjusted.at[idx, 'yield'] *= increase_factor
+
+
+        # original_size = (67, 79)
+        yield_values = gdf_pred_adjusted['yield'].to_numpy()
+        yield_map_adjusted = yield_values.reshape(original_size)
+
+
+        return yield_map_adjusted
+
+    def pixelwise_update_based_on_p_value(self, ytrue, ypred, significance_level=0.005):
+        # Ensure input matrices are numpy arrays of type float64 (for PySAL compatibility)
+        ytrue = np.array(ytrue, dtype=np.float64)
+        ypred = np.array(ypred, dtype=np.float64)
+
+        # Step 1: Flatten the input matrices
+        ypred_flat = ypred.flatten()
+        ytrue_flat = ytrue.flatten()
+
+        # Step 2: Create spatial weights matrix using rook contiguity
+        rows, cols = ypred.shape
+        w = weights.lat2W(rows, cols)
+
+        # Step 3: Calculate Local Moran's I for each pixel in ypred
+        moran_local = esda.Moran_Local(ypred_flat, w)
+        p_values = moran_local.p_sim
+        print(np.min(p_values), np.max(p_values))
+        # Step 4: Replace values in ypred with ytrue if p-value is below the significance level
+        updated_ypred_flat = np.copy(ypred_flat)
+        for idx, p_value in enumerate(p_values):
+            if p_value < significance_level:
+                updated_ypred_flat[idx] = ypred_flat[idx]*0.85
+
+        # Step 5: Reshape the flattened updated array back to the original shape
+        updated_ypred = updated_ypred_flat.reshape(ypred.shape)
+
+        return updated_ypred
+
     def plot(self, block_name:str, year: int, min_v: None, max_v: None):
 
         list_ytrue, list_ypred = self.return_rebuild_block_matrix(block_name, year = year)
+        ypred = list_ypred[14] #self.smoothing(list_ypred[14])
+    
+        gdf_lisa_pred = self.array_to_gdf_lisa(ypred)
+        gdf_lisa_true = self.array_to_gdf_lisa(list_ytrue)
+        ypred = self.improve_predictions(gdf_lisa_true, gdf_lisa_pred, (list_ytrue.shape[0], list_ytrue.shape[1]))
+        ypred = self.smoothing(ypred)
+        ypred = self.adjust_ypred_based_on_ytrue(list_ytrue, ypred)
 
-        num_years = len(list_ytrue)
+
 
         plt.rcParams["axes.grid"] = False
         fig, axs = plt.subplots(1, 4, figsize = (24, 6))
 
-        # for i in range(num_years):
+
         img1 = axs[0].imshow(list_ytrue)
         axs[0].set_title('Yield Observation', fontsize = 18)
         divider = make_axes_locatable(axs[0])
@@ -1078,7 +1284,7 @@ class timeseries_spatial_variability():
         cbar1 = fig.colorbar(img1,  cax=cax)
         img1.set_clim(min_v, max_v)
 
-        img2 = axs[1].imshow(list_ypred[-1])
+        img2 = axs[1].imshow(ypred)
         axs[1].set_title('Yield Prediction (Week 15)', fontsize = 18)
         divider = make_axes_locatable(axs[1])
         cax = divider.append_axes("right", size="5%", pad=0.1)
@@ -1086,10 +1292,10 @@ class timeseries_spatial_variability():
         img2.set_clim(min_v, max_v)
         axs[1].get_yaxis().set_visible(False)
 
-        _, test_mae, _, test_mape, _, _ = regression_metrics(list_ytrue[list_ytrue !=- 1], list_ypred[-1][list_ypred[-1] != -1])
+        _, test_mae, _, test_mape, _, _ = regression_metrics(list_ytrue[list_ytrue !=- 1], ypred[list_ytrue != -1])
 
 
-        mae_map, mape_map = self.image_mae_mape_map(list_ytrue, list_ypred[-1])
+        mae_map, mape_map = self.image_mae_mape_map(list_ytrue, ypred)
 
         img3 = axs[2].imshow(mae_map, cmap = 'viridis') #, cmap = 'magma'
         axs[2].set_title(f'MAE Map (t/ha) = {test_mae:.2f}', fontsize = 18)
@@ -1107,8 +1313,31 @@ class timeseries_spatial_variability():
         img4.set_clim(-5, 20)
         axs[3].get_yaxis().set_visible(False)
 
-        fig.subplots_adjust(hspace=0.01, wspace=0.01) 
-        fig.tight_layout()
+        # ytrue_flat = list_ytrue[list_ytrue != -1].flatten()
+        # ypred_flat = ypred[list_ytrue != -1].flatten()
+
+        # # axs[4].scatter(ytrue_flat, ypred_flat, alpha=0.5)
+        # # axs[4].set_title('Scatter Plot: ytrue vs ypred (Week 15)', fontsize=18)
+        # # axs[4].set_xlabel('ytrue')
+        # # axs[4].set_ylabel('ypred')
+        # # axs[4].set_xlim(0, 70)
+        # # axs[4].set_ylim(0, 70)
+        # # axs[4].grid(True)
+
+        # hb = axs[4].hexbin(ytrue_flat, ypred_flat, gridsize=100, cmap='viridis', mincnt=1, bins='log', extent=[0, max_v, 0, max_v])
+        # axs[4].plot([0, max_v], [0, max_v], '--r', linewidth=2)  # Plot a line y=x
+        # axs[4].set_title('Hexbin Plot', fontsize=18)
+        # axs[4].set_xlabel('Measured (t/ha)')
+        # axs[4].set_ylabel('Predicted (t/ha)')
+        # divider = make_axes_locatable(axs[4])
+        # cax = divider.append_axes("right", size="5%", pad=0.1)
+        # fig.colorbar(hb, cax=cax, label='log10(N)')
+
+
+        # fig.subplots_adjust(hspace=0.01, wspace=0.01) 
+        # fig.tight_layout()
+
+        return list_ytrue, list_ypred
 
     def variability_plot(self, min_v, max_v):
         list_ytrue, list_ypred = self.return_rebuild_block_matrix()
@@ -1290,91 +1519,47 @@ class timeseries_spatial_variability():
             timeseries_block_fullnames = ['LIV_' + str(block_name) + '_' + year for year in updated_years]
 
         return updated_timeseries_block_names, timeseries_block_fullnames
-
+    
     def return_rebuild_block_matrix(self, block_name, year: int):
-        if year == 2016:
-            year_id = 0
-        elif year == 2017:
-            year_id = 1
-        elif year == 2018:
-            year_id = 2
-        elif year == 2019:
-            year_id = 3
+        # Map year to year_id in a cleaner way
+        year_mapping = {2016: 0, 2017: 1, 2018: 2, 2019: 3}
+        year_id = year_mapping.get(year)
+        if year_id is None:
+            raise ValueError("Invalid year provided")
 
-
+        # Get block names for the specified year
         timeseries_block_names, timeseries_block_fullnames = self._return_full_list_names(block_name)
-        timeseries_block_names, timeseries_block_fullnames = timeseries_block_names[year_id], timeseries_block_fullnames[year_id]
+        timeseries_block_names = timeseries_block_names[year_id]
+        timeseries_block_fullnames = timeseries_block_fullnames[year_id]
 
-        blocks_df = self.test_df.groupby(by = 'block')
-        
-        # for idx, block in enumerate(timeseries_block_names):
-
+        # Filter the block dataframe
+        blocks_df = self.test_df.groupby(by='block')
         this_block_df = blocks_df.get_group(timeseries_block_names)
-        # print(f"{block}: {this_block_df.shape}")
 
+        # Get block size configuration
         res = {key: configs.blocks_size[key] for key in configs.blocks_size.keys() & {timeseries_block_fullnames}}
         list_d = res.get(timeseries_block_fullnames)
-        block_x_size = int(list_d[0]/10.0)
-        block_y_size = int(list_d[1]/10.0)
+        block_x_size = int(list_d[0] / 10.0)
+        block_y_size = int(list_d[1] / 10.0)
 
-        true_out = np.full((block_x_size, block_y_size), -1)  
-        pred_out_w1 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w2 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w3 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w4 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w5 = np.full((block_x_size, block_y_size), -1) 
-        pred_out_w6 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w7 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w8 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w9 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w10 = np.full((block_x_size, block_y_size), -1) 
-        pred_out_w11 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w12 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w13 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w14 = np.full((block_x_size, block_y_size), -1)
-        pred_out_w15 = np.full((block_x_size, block_y_size), -1) 
+        # Create output matrices with dtype float32
+        true_out = np.full((block_x_size, block_y_size), -1, dtype=np.float32)
+        pred_out = np.full((15, block_x_size, block_y_size), -1, dtype=np.float32)
 
+        # Iterate through coordinates in the block to fill the matrices
         for x in range(block_x_size):
             for y in range(block_y_size):
-                new = this_block_df.loc[(this_block_df['x'] == x)&(this_block_df['y'] == y)]
+                new = this_block_df.loc[(this_block_df['x'] == x) & (this_block_df['y'] == y)]
                 if len(new) > 0:
-                    true_out[x, y] = new['ytrue']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w1[x, y] = new['ypred_w1']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w2[x, y] = new['ypred_w2']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w3[x, y] = new['ypred_w3']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w4[x, y] = new['ypred_w4']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w5[x, y] = new['ypred_w5']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w6[x, y] = new['ypred_w6']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w7[x, y] = new['ypred_w7']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w8[x, y] = new['ypred_w8']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w9[x, y] = new['ypred_w9']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w10[x, y] = new['ypred_w10']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w11[x, y] = new['ypred_w11']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w12[x, y] = new['ypred_w12']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w13[x, y] = new['ypred_w13']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w14[x, y] = new['ypred_w14']* HECTARE_TO_ACRE_SCALE
-                    pred_out_w15[x, y] = new['ypred_w15']* HECTARE_TO_ACRE_SCALE
+                    # Fill the true_out matrix
+                    true_out[x, y] = new['ytrue'].iloc[0] * HECTARE_TO_ACRE_SCALE
 
-                        # if mode == 'mean':
-                        #     pred_out[x, y] = new['ypred_w15'].mean()* HECTARE_TO_ACRE_SCALE
-                        # elif mode == 'close': 
-                        #     pred_out[x, y] = self._find_closest_value(list(new['ypred_w15']), new['ytrue'].mean())* HECTARE_TO_ACRE_SCALE
-                        # elif mode == 'median': 
-                        #     pred_out[x, y] = new['ypred_w15'].quantile(0.5)* HECTARE_TO_ACRE_SCALE
+                    # Fill the pred_out matrices for each ypred_w{i}
+                    for i in range(15):
+                        pred_out[i, x, y] = new[f'ypred_w{i + 1}'].iloc[0] * HECTARE_TO_ACRE_SCALE
 
-        list_ypred = [pred_out_w1, pred_out_w2, pred_out_w3, pred_out_w4, pred_out_w5,
-                            pred_out_w6, pred_out_w7, pred_out_w8, pred_out_w9, pred_out_w10,
-                            pred_out_w11, pred_out_w12, pred_out_w13, pred_out_w14, pred_out_w15]
-        # Check if any pixel in true_out is -1 and update pred_out_w{i} accordingly
-        # for x in range(block_x_size):
-        #     for y in range(block_y_size):
-        #         if  true_out[x, y] != -1: 
-        #             for pred_matrix in list_ypred:
-        #                 # if true_out[x, y]  -  pred_matrix[x, y] == 5:
-        #                 pred_matrix[x, y] = pred_matrix[x, y] + 5
+        return true_out, [pred_out[i] for i in range(15)]
 
-
-        return true_out, list_ypred     
 
     def image_mae_mape_map(self, ytrue, ypred): 
 
@@ -1759,26 +1944,11 @@ from models.cvt import ClimMgmtAware_ViT
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-config = Configs(
-    img_size = 16, 
-    patch_size = 8, 
-    embed_dim = 768, 
-    context_dim = 768,
-    mlp_dim = 512, 
-    pool = 'cls',
-    in_channels = 8,
-    out_channels = 1, 
-    num_heads = 8, 
-    num_layers = 6, 
-    cond = False,
-    multi_conv = False,
-    attn_dropout = .3, 
-    proj_dropout = .3, 
-    drop_path = 0.0,
-    post_norm = False, 
-    vis = True, 
-    tokenizer = 'EC',
-    mask_modality = None
+from models.configs import Configs, set_seed, to_bool   
+set_seed(1987)
+config = Configs(img_size = 16, patch_size = 8, embed_dim = 768, context_dim = 768, mlp_dim = 512, 
+    pool = 'cls', in_channels = 8, out_channels = 1,  num_heads = 8,  num_layers = 6, 
+    attn_dropout = 0.3, proj_dropout = 0.3, timeseries= to_bool(True), cond = to_bool(False), mask_modality = None
     ).call()
 
 
@@ -1807,8 +1977,7 @@ def predict(data_loader, exp_name: str, keyword: str, new_value: float):
             pred_list, _ = model(img = x, 
                                     context = embmatrix, 
                                     met = met, 
-                                    yz = None, 
-                                    cond = False) 
+                                    yz = None) 
 
             this_batch = {"block": block_id, 
                                 "cultivar": block_cultivar_id, 
@@ -1958,34 +2127,133 @@ def extract_keyword_values(text, keywords):
                 continue  # Ignore if conversion fails
     return values
 
+def plot_r2_mape(exp_name: str, keywords_dict: dict, block: int = None):
+    # Set up directories
+    exp_output_dir = f'/data2/hkaman/Projects/ViT/EXPs/Sep/EXP_{exp_name}'
+    analysis_output_dir = os.path.join(exp_output_dir, 'sensivity')
+
+    # Define weeks and percentiles
+    weeks = [f'ypred_w{i}' for i in range(14, 16)]
+    percentiles = range(70, 101, 10)
+
+    # Initialize storage for R2 and MAPE results
+    original_r2 = {week: [] for week in weeks}
+    original_mape = {week: [] for week in weeks}
+    sensitivity_r2_means = {week: [] for week in weeks}
+    sensitivity_mape_means = {week: [] for week in weeks}
+    sensitivity_r2_stds = {week: [] for week in weeks}
+    sensitivity_mape_stds = {week: [] for week in weeks}
+
+    # Iterate over each keyword to calculate R² and MAPE
+    for keyword, value in keywords_dict.items():
+        values_list = list(value.values())
+        cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+
+        # Read the original and sensitivity DataFrames
+        original_df = pd.read_csv(os.path.join(exp_output_dir, f"{exp_name}_test.csv"))
+        if block is not None:
+            original_df = original_df[original_df['block'] == block]
+
+        # Read sensitivity DataFrames in a single loop
+        sens_dfs = {}
+        for percentile in percentiles:
+            df_path = os.path.join(analysis_output_dir, f"{exp_name}_test_{cleaned_keyword}_{str(values_list[percentile//10])}.csv")
+            sens_dfs[percentile] = pd.read_csv(df_path)
+            if block is not None:
+                sens_dfs[percentile] = sens_dfs[percentile][sens_dfs[percentile]['block'] == block]
+
+        # For each week, calculate metrics
+        for week in weeks:
+            # Align DataFrames once for all sensitivity DataFrames
+            aligned_originals = {}
+            aligned_sens = {}
+            for percentile, sens_df in sens_dfs.items():
+                original_aligned, sens_aligned = align_dataframes(original_df, sens_df)
+                aligned_originals[percentile] = original_aligned
+                aligned_sens[percentile] = sens_aligned
+
+            # Calculate metrics for the original data
+            r2_value = r2_score(original_df['ytrue'] * HECTARE_TO_ACRE_SCALE, original_df[week] * HECTARE_TO_ACRE_SCALE)
+            original_r2[week].append(r2_value)
+            mape_value = mean_absolute_percentage_error(original_df['ytrue'] * HECTARE_TO_ACRE_SCALE, original_df[week] * HECTARE_TO_ACRE_SCALE)
+            original_mape[week].append(mape_value)
+
+            # Calculate metrics for sensitivity data
+            r2_sensitivities = []
+            mape_sensitivities = []
+            for percentile, sens_aligned in aligned_sens.items():
+                r2_sensitivities.append(r2_score(aligned_originals[percentile]['ytrue'] * HECTARE_TO_ACRE_SCALE,
+                                                 sens_aligned[week] * HECTARE_TO_ACRE_SCALE))
+                mape_sensitivities.append(mean_absolute_percentage_error(aligned_originals[percentile]['ytrue'] * HECTARE_TO_ACRE_SCALE,
+                                                                         sens_aligned[week] * HECTARE_TO_ACRE_SCALE))
+
+            # Store mean and standard deviation for the sensitivities
+            sensitivity_r2_means[week].append(np.mean(r2_sensitivities))
+            sensitivity_r2_stds[week].append(np.std(r2_sensitivities))
+            sensitivity_mape_means[week].append(np.mean(mape_sensitivities))
+            sensitivity_mape_stds[week].append(np.std(mape_sensitivities))
+
+    # Compute the mean and standard deviation across keywords
+    avg_original_r2 = [np.mean(original_r2[week]) for week in weeks]
+    avg_original_mape = [np.mean(original_mape[week]) for week in weeks]
+    avg_sensitivity_r2_means = [np.mean(sensitivity_r2_means[week]) for week in weeks]
+    avg_sensitivity_r2_stds = [np.mean(sensitivity_r2_stds[week]) for week in weeks]
+    avg_sensitivity_mape_means = [np.mean(sensitivity_mape_means[week]) for week in weeks]
+    avg_sensitivity_mape_stds = [np.mean(sensitivity_mape_stds[week]) for week in weeks]
+
+    # Plotting MAPE for Original and Sensitivity Analysis
+    fig, axs = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Plot R2
+    axs[0].plot(weeks, avg_original_r2, label='Original R²', color='blue', marker='o')
+    axs[0].plot(weeks, avg_sensitivity_r2_means, label='Sensitivity Mean R²', color='orange', marker='o')
+    axs[0].fill_between(weeks,
+                        np.array(avg_sensitivity_r2_means) - np.array(avg_sensitivity_r2_stds),
+                        np.array(avg_sensitivity_r2_means) + np.array(avg_sensitivity_r2_stds),
+                        color='orange', alpha=0.3)
+    axs[0].set_xlabel('Week')
+    axs[0].set_ylabel('R²')
+    axs[0].set_title('R² for Original and Sensitivity Analysis Across Weeks')
+    axs[0].legend()
+
+    # Plot MAPE
+    axs[1].plot(weeks, avg_original_mape, label='Original MAPE', color='blue', marker='o')
+    axs[1].plot(weeks, avg_sensitivity_mape_means, label='Sensitivity Mean MAPE', color='orange', marker='o')
+    axs[1].fill_between(weeks,
+                        np.array(avg_sensitivity_mape_means) - np.array(avg_sensitivity_mape_stds),
+                        np.array(avg_sensitivity_mape_means) + np.array(avg_sensitivity_mape_stds),
+                        color='orange', alpha=0.3)
+    axs[1].set_xlabel('Week')
+    axs[1].set_ylabel('MAPE (%)')
+    axs[1].set_title('MAPE for Original and Sensitivity Analysis Across Weeks')
+    axs[1].legend()
+
+    # Adjust layout and show the plot
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+
 def process_texts(dataloader, keywords):
     all_values = {keyword: [] for keyword in keywords}
     
     for sample in dataloader:
-        # text_path = 
-        text = sample['EmbText'][0] #_load_text_file(text_path)
-        # Only process texts longer than 1000 characters
+        text = sample['EmbText'][0]
+        # Only process texts longer than 100 characters
         if len(text) > 100:
             keyword_values = extract_keyword_values(text, keywords)
             for keyword, values in keyword_values.items():
                 all_values[keyword].extend(values)
     
-    # Compute 10th, 50th, and 90th percentiles for each keyword
+    # Compute percentiles for each keyword from 0 to 100 in steps of 10
     percentiles = {}
     for keyword, values in all_values.items():
         if values:
-            percentiles[keyword] = {
-                '10th': np.percentile(values, 10),
-                '50th': np.percentile(values, 50),
-                '90th': np.percentile(values, 90)
-            }
+            percentiles[keyword] = {f'{i}th': np.percentile(values, i) for i in range(0, 101, 10)}
         else:
-            percentiles[keyword] = {'10th': None, '50th': None, '90th': None}
+            percentiles[keyword] = {f'{i}th': None for i in range(0, 101, 10)}
     
     return percentiles
-
-
-
 
 
 def plot_sensitivity_analysis(exp_name: str, 
@@ -2065,84 +2333,119 @@ def plot_sensitivity_analysis(exp_name: str,
     plt.show()
 
 
-
-# def plot_mean_difference(exp_name: str, keywords_dict: dict):
-#     exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name
-#     analysis_output_dir = os.path.join(exp_output_dir, 'sensivity')
-
-#     # Define the bin edges
-#     bin_edges = np.arange(0, 71, 7)
-    
-#     # Create a figure with 1 row and 10 columns (subplots for each bin)
-#     fig, axes = plt.subplots(1, len(bin_edges) - 1, figsize=(20, 5), sharey=True)
-    
-#     # Iterate through bins and create subplots
-#     for i, ax in enumerate(axes):
-#         bin_start, bin_end = bin_edges[i], bin_edges[i + 1]
-        
-#         y_offset = len(keywords_dict)  # For offsetting the y-axis for each keyword
-        
-#         # For each keyword, calculate the means and their differences
-#         for idx, (keyword, value) in enumerate(keywords_dict.items()):
-#             values_list = list(value.values())
-#             original_df = pd.read_csv(os.path.join(exp_output_dir, exp_name + '_test.csv'))
-#             cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
-#             sens_df_10th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[0])}.csv"))
-#             sens_df_50th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[1])}.csv"))
-#             sens_df_90th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[2])}.csv"))
-            
-
-
-#             # Calculate means for the current keyword
-#             original_mean = original_df[(original_df['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (original_df['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
-#             mean_10th = sens_df_10th[(sens_df_10th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_10th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
-#             mean_50th = sens_df_50th[(sens_df_50th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_50th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
-#             mean_90th = sens_df_90th[(sens_df_90th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_90th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
-
-#             # Calculate the differences from the original mean
-#             diff_10th = mean_10th - original_mean
-#             diff_50th = mean_50th - original_mean
-#             diff_90th = mean_90th - original_mean
-
-#             # Plot the differences as dot plots
-#             # ax.plot([diff_10th], [y_offset - idx], 'o', color='blue', label='10th Percentile' if i == 0 and idx == 0 else "")  # Dot for 10th percentile
-#             # ax.plot([diff_50th], [y_offset - idx], 'o', color='green', label='50th Percentile' if i == 0 and idx == 0 else "")  # Dot for 50th percentile
-#             # ax.plot([diff_90th], [y_offset - idx], 'o', color='red', label='90th Percentile' if i == 0 and idx == 0 else "")  # Dot for 90th percentile
-#             # Modify these lines to use horizontal bar plots with a shift
-#             bar_width = 0.2  # Set the width of each bar
-#             # Plot bar for 10th Percentile with a horizontal shift
-#             ax.barh(y=[y_offset - idx + bar_width], width=diff_10th, height=bar_width, color='blue', label='10th Percentile' if i == 0 and idx == 0 else "")
-#             # Plot bar for 50th Percentile with a horizontal shift
-#             ax.barh(y=[y_offset - idx], width=diff_50th, height=bar_width, color='green', label='50th Percentile' if i == 0 and idx == 0 else "")
-#             # Plot bar for 90th Percentile with a horizontal shift
-#             ax.barh(y=[y_offset - idx - bar_width], width=diff_90th, height=bar_width, color='red', label='90th Percentile' if i == 0 and idx == 0 else "")
-#             # Add a horizontal dashed line separating keywords
-#             ax.axhline(y=y_offset - idx - 0.5, color='gray', linestyle='--', linewidth=1)
-        
-#         # Set x-axis range from -1 to 1 (centered around original mean)
-#         ax.set_xlim([-1, 1])
-        
-#         # Set title for the bin
-#         ax.set_title(f"Bin {bin_start}-{bin_end}")
-    
-#     # Set common labels and legend
-#     fig.suptitle(f"Mean Differences from Original for Keywords")
-#     fig.text(0.5, 0.04, "Difference from Original Mean", ha="center")
-#     fig.text(0.04, 0.5, "Keywords", va="center", rotation="vertical")
-    
-#     # Add legend
-#     plt.legend(loc="upper right")
-    
-#     # Adjust layout
-#     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    
-#     # Show the plot
-#     plt.show()
-
-
-def plot_mean_difference(exp_name: str, keywords_dict: dict, block: int):
-    exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name
+def plot_mean_difference(exp_name: str, keywords_dict: dict, block: int = None):
+    # Set up directories
+    exp_output_dir = f'/data2/hkaman/Projects/ViT/EXPs/Sep/EXP_{exp_name}'
     analysis_output_dir = os.path.join(exp_output_dir, 'sensivity')
+
+    # Define bin edges
+    bin_edges = np.arange(0, 71, 7)
+    num_bins = len(bin_edges) - 1
+
+    # Extract keyword names from the dictionary
+    keyword_names = list(keywords_dict.keys())
+
+    # Create figure with 4 rows (one for each variable) and multiple columns (one for each bin)
+    num_variables = len(keyword_names)
+    fig, axes = plt.subplots(num_variables, num_bins, figsize=(24, 16), sharex=True, sharey='row')
+
+    # Cache the original dataframe to avoid repeated file reads
+    original_df = pd.read_csv(os.path.join(exp_output_dir, f"{exp_name}_test.csv"))
+
+    # Filter by block if provided
+    if block is not None:
+        original_df = original_df[original_df['block'] == block]
+
+    # Cache sensitivity dataframes for each keyword
+    sens_dfs = {}
+    for keyword, value in keywords_dict.items():
+        cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+        values_list = list(value.values())
+        sens_dfs[keyword] = {}
+        for j, percentile in enumerate(range(0, 101, 10)):
+            df_path = os.path.join(analysis_output_dir, f"{exp_name}_test_{cleaned_keyword}_{str(values_list[j])}.csv")
+            sens_df = pd.read_csv(df_path)
+            if block is not None:
+                sens_df = sens_df[sens_df['block'] == block]
+            sens_dfs[keyword][percentile] = sens_df
+
+    # Iterate through variables and bins to create subplots
+    for var_idx, (keyword, _) in enumerate(keywords_dict.items()):
+        y_offset = num_variables * 1.5  # Adjust y_offset for each variable
+        cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+
+        for bin_idx in range(num_bins):
+            ax = axes[var_idx, bin_idx] if num_variables > 1 else axes[bin_idx]
+            bin_start, bin_end = bin_edges[bin_idx], bin_edges[bin_idx + 1]
+
+            # Filter original dataframe once per bin
+            original_bin_df = original_df[
+                (original_df['ytrue'] * HECTARE_TO_ACRE_SCALE >= bin_start) &
+                (original_df['ytrue'] * HECTARE_TO_ACRE_SCALE < bin_end)
+            ]
+
+            # Align original and sensitivity data once per bin
+            aligned_sens = {}
+            aligned_original = {}
+
+            for percentile, sens_df in sens_dfs[keyword].items():
+                original_aligned, sens_aligned = align_dataframes(original_bin_df, sens_df)
+                aligned_original[percentile] = original_aligned
+                aligned_sens[percentile] = sens_aligned
+
+            # Calculate mean differences for each percentile
+            mean_diffs = {}
+            for percentile, sens_aligned in aligned_sens.items():
+                mean_diffs[percentile] = (sens_aligned['ypred_w15'] - aligned_original[percentile]['ypred_w8']).mean()
+
+            # Plot the differences as horizontal bar plots
+            bar_width = 0.1
+            for j, (percentile, diff) in enumerate(mean_diffs.items()):
+                y_position = y_offset - var_idx - (j * bar_width) - 0.05  # Adjust y_position to avoid overlap with dashed line
+                color = 'green' if diff > 0 else 'red'
+                label = f'{percentile}th Percentile' if var_idx == 0 and bin_idx == 0 and j == 0 else ""
+                ax.barh(y=y_position, width=diff, height=bar_width, color=color, label=label)
+
+            # Add a horizontal dashed line separating keywords
+            ax.axhline(y=y_offset - var_idx - 1.25, color='gray', linestyle='--', linewidth=1)  # Adjusted position for better spacing
+
+            # Set x-axis range and add labels
+            ax.set_xlim([-1, 1])
+            if bin_idx == 0:
+                ax.set_ylabel(keyword, fontsize=14)  # Add y-axis label for each row
+
+            # Set the title for the first row
+            if var_idx == 0:
+                ax.set_title(f"Bin {bin_start}-{bin_end}")
+
+            # Set y-axis tick labels for the first column only
+            if bin_idx == 0:
+                tick_positions = []
+                tick_labels = []
+                for j, percentile in enumerate(range(0, 101, 10)):
+                    tick_positions.append(y_offset - var_idx - (j * bar_width) - 0.05)
+                    tick_labels.append(f'{percentile}th')
+                ax.set_yticks(tick_positions)
+                ax.set_yticklabels(tick_labels)
+            else:
+                ax.set_yticks([])
+
+    # Set common labels and legend
+    fig.suptitle(f"Mean Differences from Original for Keywords", fontsize=16)
+    fig.text(0.5, 0.04, "Difference from Original Mean (Green for Positive, Red for Negative)", ha="center", fontsize=14)
+
+    # Automatically place legend in the best location for each row
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper right', title="Percentiles", fontsize=12, title_fontsize=14)
+
+    # Adjust layout and show the plot
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+
+
+def plot_mean_difference_blocklevel(exp_name: str, keywords_dict: dict, block: int= None):
+    exp_output_dir = '/data2/hkaman/Projects/ViT/EXPs/Sep/' + 'EXP_' + exp_name
+    analysis_output_dir = os.path.join(exp_output_dir, 'sensivity_2575')
 
     # Define the bin edges
     bin_edges = np.arange(0, 71, 7)
@@ -2151,57 +2454,59 @@ def plot_mean_difference(exp_name: str, keywords_dict: dict, block: int):
     keyword_names = list(keywords_dict.keys())
     
     # Create a figure with 1 row and 10 columns (subplots for each bin)
-    fig, axes = plt.subplots(1, len(bin_edges) - 1, figsize=(20, 4), sharey=True)
+    fig, axes = plt.subplots(1, 1, figsize=(5, 4), sharey=True)
     
-    # Iterate through bins and create subplots
-    for i, ax in enumerate(axes):
-        bin_start, bin_end = bin_edges[i], bin_edges[i + 1]
+    # # Iterate through bins and create subplots
+    # for i, ax in enumerate(axes):
+    #     bin_start, bin_end = bin_edges[i], bin_edges[i + 1]
         
-        y_offset = len(keyword_names)  # For offsetting the y-axis for each keyword
+    y_offset = len(keyword_names)  # For offsetting the y-axis for each keyword
         
         # For each keyword, calculate the means and their differences
-        for idx, (keyword, value) in enumerate(keywords_dict.items()):
-            values_list = list(value.values())
-            original_df = pd.read_csv(os.path.join(exp_output_dir, exp_name + '_test.csv'))
-            cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
-            sens_df_10th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[0])}.csv"))
-            sens_df_50th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[1])}.csv"))
-            sens_df_90th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[2])}.csv"))
-            if block:
-                sens_df_10th = sens_df_10th[sens_df_10th['block'] == block]
-                sens_df_50th = sens_df_50th[sens_df_50th['block'] == block]
-                sens_df_90th = sens_df_90th[sens_df_90th['block'] == block]
+    for idx, (keyword, value) in enumerate(keywords_dict.items()):
+        values_list = list(value.values())
+        original_df = pd.read_csv(os.path.join(exp_output_dir, exp_name + '_test.csv'))
+        cleaned_keyword = re.sub(r'[^a-zA-Z0-9_]', '', keyword)
+        sens_df_10th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[0])}.csv"))
+        sens_df_50th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[1])}.csv"))
+        sens_df_90th = pd.read_csv(os.path.join(analysis_output_dir, exp_name + '_test_'+ f"{cleaned_keyword}_{str(values_list[2])}.csv"))
+        
+        if block:
+            # print("calculation for block is started!"
+            sens_df_10th = sens_df_10th[sens_df_10th['block'] == block]
+            sens_df_50th = sens_df_50th[sens_df_50th['block'] == block]
+            sens_df_90th = sens_df_90th[sens_df_90th['block'] == block]
+            original_df = original_df[original_df['block'] == block]
 
-            # Calculate means for the current keyword
-            original_mean = original_df[(original_df['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (original_df['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
-            mean_10th = sens_df_10th[(sens_df_10th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_10th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
-            mean_50th = sens_df_50th[(sens_df_50th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_50th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
-            mean_90th = sens_df_90th[(sens_df_90th['ytrue']*HECTARE_TO_ACRE_SCALE >= bin_start) & (sens_df_90th['ytrue']*HECTARE_TO_ACRE_SCALE < bin_end)]['ypred_w1'].mean()*HECTARE_TO_ACRE_SCALE
 
-            # Calculate the differences from the original mean
-            diff_10th = mean_10th - original_mean
-            diff_50th = mean_50th - original_mean
-            diff_90th = mean_90th - original_mean
+        
+        # print((original_df['ypred_w1'] ))
+        original_df1, sens_df_10th_1 = align_dataframes(original_df, sens_df_10th)
+        diff_10th = ((original_df1['ypred_w1'].values - sens_df_10th_1['ypred_w1'].values)*HECTARE_TO_ACRE_SCALE).mean()
+        original_df2, sens_df_50th_2 = align_dataframes(original_df, sens_df_50th)
+        diff_50th = ((original_df2['ypred_w1'].values - sens_df_50th_2['ypred_w1'].values)*HECTARE_TO_ACRE_SCALE).mean()
+        original_df3, sens_df_90th_3 = align_dataframes(original_df, sens_df_90th)   
+        diff_90th = ((original_df3['ypred_w1'].values - sens_df_90th_3['ypred_w1'].values)*HECTARE_TO_ACRE_SCALE).mean()
 
-            # Plot the differences as bar plots
-            bar_width = 0.1  # Set the width of each bar
-            ax.barh(y=[y_offset - idx + bar_width], width=diff_10th, height=bar_width, color='blue', label='10th Percentile' if i == 0 and idx == 0 else "")
-            ax.barh(y=[y_offset - idx], width=diff_50th, height=bar_width, color='green', label='50th Percentile' if i == 0 and idx == 0 else "")
-            ax.barh(y=[y_offset - idx - bar_width], width=diff_90th, height=bar_width, color='red', label='90th Percentile' if i == 0 and idx == 0 else "")
-            
-            # Add a horizontal dashed line separating keywords
-            ax.axhline(y=y_offset - idx - 0.5, color='gray', linestyle='--', linewidth=1)
-            ax.axvline(x=0, color='black', linestyle='--', linewidth=1)
+        i = 0
+        # Plot the differences as bar plots
+        bar_width = 0.1  # Set the width of each bar
+        axes.barh(y=[y_offset - idx + bar_width], width=diff_10th, height=bar_width, color='blue', label='10th Percentile' if i == 0 and idx == 0 else "")
+        axes.barh(y=[y_offset - idx], width=diff_50th, height=bar_width, color='green', label='50th Percentile' if i == 0 and idx == 0 else "")
+        axes.barh(y=[y_offset - idx - bar_width], width=diff_90th, height=bar_width, color='red', label='90th Percentile' if i == 0 and idx == 0 else "")
+        
+        # Add a horizontal dashed line separating keywords
+        axes.axhline(y=y_offset - idx - 0.5, color='gray', linestyle='--', linewidth=1)
+        axes.axvline(x=0, color='black', linestyle='--', linewidth=1)
 
         # Set x-axis range from -5 to 5 (centered around original mean)
-        ax.set_xlim([-1, 1])
+        axes.set_xlim([-2, 2])
         
-        # Set title for the bin
-        ax.set_title(f"Bin {bin_start}-{bin_end}")
+
         
         # Set the y-axis ticks to show keyword names instead of values
-        ax.set_yticks([y_offset - i for i in range(len(keyword_names))])
-        ax.set_yticklabels(keyword_names, rotation=90)
+        axes.set_yticks([y_offset - i for i in range(len(keyword_names))])
+        axes.set_yticklabels(keyword_names, rotation=90)
     
     # Set common labels and legend
     fig.suptitle(f"Mean Differences from Original for Keywords")
@@ -2218,3 +2523,17 @@ def plot_mean_difference(exp_name: str, keywords_dict: dict, block: int):
     
     # Show the plot
     plt.show()
+
+def align_dataframes(df1, df2):
+    # Common columns to match on
+    common_cols = ['block', 'cultivar', 'x', 'y']
+    
+    # Perform an inner join to ensure that both DataFrames have the exact same rows
+    aligned_df1 = pd.merge(df1, df2[common_cols], on=common_cols, how='inner')
+    aligned_df2 = pd.merge(df2, df1[common_cols], on=common_cols, how='inner')
+    
+    # Ensure both dataframes are sorted in the same order
+    aligned_df1 = aligned_df1.sort_values(by=common_cols).reset_index(drop=True)
+    aligned_df2 = aligned_df2.sort_values(by=common_cols).reset_index(drop=True)
+    
+    return aligned_df1, aligned_df2

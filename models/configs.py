@@ -291,12 +291,8 @@ class Configs():
                  num_layers: int,
                  attn_dropout: float, 
                  proj_dropout: float, 
-                 drop_path: float,
-                 post_norm :str = True, 
-                 vis: str = True, 
-                 multi_conv: str = True,
-                 cond: str = False,
-                 tokenizer: str = 'EC', 
+                 timeseries: str = False,
+                 cond : str = False,
                  mask_modality: str = 'text'):
 
         self.img_size = img_size
@@ -310,13 +306,9 @@ class Configs():
         self.num_layers = num_layers
         self.attn_dropout = attn_dropout
         self.proj_dropout = proj_dropout
-        self.drop_path = drop_path
-        self.post_norm = post_norm
-        self.vis = vis
-        self.cond = cond
-        self.multi_conv = multi_conv
+        self.timeseries = to_bool(timeseries)
+        self.cond = to_bool(cond)
         self.pool = pool
-        self.tokenizer = tokenizer
         self.mask_modality = mask_modality
     
     def call(self):
@@ -334,13 +326,9 @@ class Configs():
         config.num_layers = self.num_layers
         config.attn_dropout = self.attn_dropout
         config.proj_dropout = self.proj_dropout
-        config.drop_path   = self.drop_path
-        config.post_norm = self.post_norm
-        config.vis = self.vis
-        config.cond = self.cond
+        config.timeseries = self.timeseries
         config.pool = self.pool
-        config.multi_conv = self.multi_conv
-        config.tokenizer = self.tokenizer
+        config.cond = self.cond
         config.mask_modality = self.mask_modality
 
         return config

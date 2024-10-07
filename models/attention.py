@@ -212,7 +212,7 @@ class Mlp(nn.Module):
 #                  config: Union[Dict], 
 #                  device=None):
 #         super().__init__()
-#         if device is None:model_name
+#         if device is None:
 #             device = 'cuda' if torch.cuda.is_available() else 'cpu'
 #         self.device = device
 #         self.config = config
@@ -221,18 +221,20 @@ class Mlp(nn.Module):
 #         self.proj = Linear(1, config['context_dim'])
 #         self.cls_token = nn.Parameter(torch.zeros(1, 1, config['context_dim']))
 #         self.dropout = Dropout(config['proj_dropout'])
-#         self.norm = nn.LayerNorm(config.embed_dim)
-
+#         self.norm = nn.LayerNorm(config['context_dim'])
 
 #     def forward(self, texts):
-
 #         encoded_texts = [self.TextEncoder.encode(text) for text in texts]
 #         max_length = 249 
 #         padded_texts = [text[:max_length] + [0] * (max_length - len(text)) for text in encoded_texts]
-        
+
+#         # Create attention mask: 1 for actual tokens, 0 for padding
+#         attention_mask = torch.tensor([[1] * len(text) + [0] * (max_length - len(text)) for text in encoded_texts], 
+#                                       dtype=torch.float32).to(self.device).bool()
+
 #         texts_tensor = torch.tensor(padded_texts, dtype=torch.float32).to(self.device)
 #         texts_tensor = torch.unsqueeze(texts_tensor, dim=-1)
-        
+
 #         B = texts_tensor.shape[0]
         
 #         cls_tokens = self.cls_token.expand(B, -1, -1)
@@ -243,9 +245,9 @@ class Mlp(nn.Module):
 #         texts_tensor = torch.cat((cls_tokens, texts_tensor), dim=1)
 
 #         embeddings = self.dropout(texts_tensor)
-        
-#         return embeddings
 
+#         return embeddings, attention_mask
+    
 # class GPTTextEmbedding(nn.Module):
 #     def __init__(self, model_name='gpt2', max_length=250):
 #         super(GPTTextEmbedding, self).__init__()
@@ -528,7 +530,6 @@ class TextEncoder(nn.Module):
         self.clone2 = Clone()
 
     def forward(self, text, mask):
-
         x1, x2 = self.clone1(text, 2)
         text, attn = self.attn(x2, mask)
 
