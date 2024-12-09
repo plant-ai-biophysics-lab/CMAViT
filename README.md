@@ -4,7 +4,7 @@ Crop yield prediction is a critical task for agricultural planning, yet it remai
 
 CMAViT leverages both spatial and temporal data by integrating remote sensing imagery and short-term meteorological data, effectively capturing variations during the growing season. Additionally, it incorporates management practices represented in text form, employing a cross-attention encoder to model their interaction with time-series data.
 
-![CMAViT Workflow](src/figs/CMAViT_GIF.gif)  
+![CMAViT Workflow](src/figs/CMAViT2.png)  
 *Figure 1: CMAViT workflow showcasing data integration and prediction pipeline.*
 
 ---
@@ -39,7 +39,7 @@ Before running the code, ensure you have the following dependencies installed:
 
 
 ## Repository Structure
-
+```bash
 ├── inference/
 │   ├── inference.py         # Modules for inference
 │   ├── CMAViT.ipynb         # Notebook for CMAViT model performance
