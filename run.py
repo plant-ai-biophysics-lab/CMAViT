@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
-from models.cvt import ClimMgmtAware_ViT
+from CMAViT.models.CMAViT import ClimMgmtAware_ViT
 # from models.ClimMgmtAwareViTLRP import ClimMgmtAware_ViT
 
 device = "cuda" if torch.cuda.is_available() else "cpu"

@@ -13,7 +13,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from models import configs
 from src import losses
 from models.configs import Configs
-from models.cvt import ClimMgmtAware_ViT
+from CMAViT.models.CMAViT import ClimMgmtAware_ViT
 
 from models.configs import set_seed
 set_seed(1987)
