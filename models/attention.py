@@ -10,7 +10,7 @@ import tiktoken
 import os 
 from typing import Union, Dict, List
 from torch.nn.functional import interpolate
-from models.layers_ours import *
+# from models.layers_ours import *
 from transformers import BertTokenizer, BertModel
 from timm.models.layers import DropPath, trunc_normal_, to_2tuple
 from transformers import GPT2Model, GPT2Tokenizer
@@ -185,10 +185,10 @@ class Mlp(nn.Module):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.fc1 = Linear(in_features, hidden_features)
-        self.act = GELU()
-        self.fc2 = Linear(hidden_features, out_features)
-        self.drop = Dropout(drop)
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -198,12 +198,12 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-    def relprop(self, cam, **kwargs):
-        cam = self.drop.relprop(cam, **kwargs)
-        cam = self.fc2.relprop(cam, **kwargs)
-        cam = self.act.relprop(cam, **kwargs)
-        cam = self.fc1.relprop(cam, **kwargs)
-        return cam
+    # def relprop(self, cam, **kwargs):
+    #     cam = self.drop.relprop(cam, **kwargs)
+    #     cam = self.fc2.relprop(cam, **kwargs)
+    #     cam = self.act.relprop(cam, **kwargs)
+    #     cam = self.fc1.relprop(cam, **kwargs)
+    #     return cam
 #========================================================================================#
 #============================ Text Embedding and Encoder ================================#
 #========================================================================================#
@@ -518,38 +518,38 @@ class TextEncoder(nn.Module):
     def __init__(self, dim, depth, heads, dim_head, mult=4, dropout=0.):
         super().__init__()
 
-        self.norm1 = LayerNorm(dim, eps=1e-6)
+        self.norm1 = nn.LayerNorm(dim) 
         self.attn = TextAttention(dim, heads=heads, dim_head=dim_head, dropout=dropout)
-        self.norm2 = LayerNorm(dim, eps=1e-6)
+        self.norm2 = nn.LayerNorm(dim)
         mlp_hidden_dim = int(dim * mult)
         self.mlp = Mlp(in_features = dim, hidden_features = mlp_hidden_dim, out_features = dim, drop = dropout) 
 
-        self.add1 = Add()
-        self.add2 = Add()
-        self.clone1 = Clone()
-        self.clone2 = Clone()
+        # self.add1 = Add()
+        # self.add2 = Add()
+        # self.clone1 = Clone()
+        # self.clone2 = Clone()
 
     def forward(self, text, mask):
-        x1, x2 = self.clone1(text, 2)
-        text, attn = self.attn(x2, mask)
-
-        text = self.add1([x1, text])
-        x1, x2 = self.clone2(text, 2)
-        text = self.add2([x1, self.mlp(self.norm2(x2))])
+        # x1, x2 = self.clone1(text, 2)
+        text, attn = self.attn(text, mask)
+        # text = self.add1([x1, text])
+        # x1, x2 = self.clone2(text, 2)
+        # text = self.add2([x1, self.mlp(self.norm2(x2))])
+        text = self.mlp(self.norm2(text))
         return text, attn
 
-    def relprop(self, cam, **kwargs):
-        (cam1, cam2) = self.add2.relprop(cam, **kwargs)
-        cam2 = self.mlp.relprop(cam2, **kwargs)
-        cam2 = self.norm2.relprop(cam2, **kwargs)
-        cam = self.clone2.relprop((cam1, cam2), **kwargs)
+    # def relprop(self, cam, **kwargs):
+    #     (cam1, cam2) = self.add2.relprop(cam, **kwargs)
+    #     cam2 = self.mlp.relprop(cam2, **kwargs)
+    #     cam2 = self.norm2.relprop(cam2, **kwargs)
+    #     cam = self.clone2.relprop((cam1, cam2), **kwargs)
 
-        (cam1, cam2) = self.add1.relprop(cam, **kwargs)
-        cam2 = self.attn.relprop(cam2, **kwargs)
-        cam2 = self.norm1.relprop(cam2, **kwargs)
-        cam = self.clone1.relprop((cam1, cam2), **kwargs)
+    #     (cam1, cam2) = self.add1.relprop(cam, **kwargs)
+    #     cam2 = self.attn.relprop(cam2, **kwargs)
+    #     cam2 = self.norm1.relprop(cam2, **kwargs)
+    #     cam = self.clone1.relprop((cam1, cam2), **kwargs)
 
-        return cam
+    #     return cam
 
 #========================================================================================#
 #========================================================================================#
