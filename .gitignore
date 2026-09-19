@@ -5,3 +5,4 @@
 *.ali
 Junky
 __pycache__
+notebooks/
